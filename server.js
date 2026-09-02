@@ -6,7 +6,7 @@ const { Pool } = require('pg');
 const { createApiRoutes, ensureMembersTable, ensureOtpVerificationsTable, ensureNotificationsTable, ensureEventsTable, ensureEmergencyContactsTable } = require('./routes/router.routes');
 
 const app = express();
-const port = Number(process.env.PORT || 3000);
+const port = process.env.PORT || 3000;
 const pool = new Pool({
   host: process.env.PGHOST || 'localhost',
   port: Number(process.env.PGPORT || 5432),
@@ -51,7 +51,7 @@ async function startServer() {
   await ensureNotificationsTable(pool);
   await ensureEventsTable(pool);
   await ensureEmergencyContactsTable(pool);
-  app.listen(5050, () => {
-    console.log(`PostgreSQL API listening on port 5050`);
+  app.listen(port, () => {
+    console.log(`PostgreSQL API listening on port ${port}`);
   });
 }
