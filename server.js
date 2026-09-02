@@ -51,7 +51,7 @@ async function startServer() {
   await ensureNotificationsTable(pool);
   await ensureEventsTable(pool);
   await ensureEmergencyContactsTable(pool);
-  app.listen(port, () => {
-    console.log(`PostgreSQL API listening on port ${port}`);
+  app.listen(5050, () => {
+    console.log(`PostgreSQL API listening on port 5050`);
   });
 }
