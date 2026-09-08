@@ -240,85 +240,22 @@ function authController(pool) {
       }
     },
 
-    // async verifyOtp(request, response) {
-    //   const mobileNumber = normalizeMobileNumber(request.body?.mobileNumber);
-    //   const otp = String(request.body?.otp || "").trim();
+    async verifyOtp1(request, response) {
 
-    //   if (!mobileNumber || !/^\d{6}$/.test(otp)) {
-    //     return response.status(400).json({
-    //       error: "mobileNumber and a 6-digit otp are required",
-    //     });
-    //   }
+      try {
 
-    //   const client = await pool.connect();
-    //   try {
-    //     await client.query("BEGIN");
-    //     const otpResult = await client.query(
-    //       `SELECT * FROM otp_verifications
-    //        WHERE mobile_number = $1 AND verified_at IS NULL
-    //        ORDER BY created_at DESC
-    //        LIMIT 1
-    //        FOR UPDATE`,
-    //       [mobileNumber],
-    //     );
+        return sendSuccess(response, 200, "Login successful", {
+          
+        });
+      } catch (error) {
+        await client.query("ROLLBACK");
+        console.error("Failed to verify login OTP:", error.message);
+        return response.status(500).json({ error: "Failed to verify login OTP" });
+      } finally {
+        client.release();
+      }
+    },
 
-    //     if (otpResult.rowCount === 0) {
-    //       await client.query("ROLLBACK");
-    //       return response.status(400).json({ error: "OTP not found or already used" });
-    //     }
-
-    //     const otpRecord = otpResult.rows[0];
-    //     if (new Date(otpRecord.expires_at) <= new Date()) {
-    //       await client.query("ROLLBACK");
-    //       return response.status(400).json({ error: "OTP has expired" });
-    //     }
-
-    //     if (otpRecord.attempts >= 5) {
-    //       await client.query("ROLLBACK");
-    //       return response.status(429).json({ error: "Too many invalid OTP attempts" });
-    //     }
-
-    //     if (hashOtp(otp) !== otpRecord.otp_hash) {
-    //       await client.query(
-    //         "UPDATE otp_verifications SET attempts = attempts + 1 WHERE id = $1",
-    //         [otpRecord.id],
-    //       );
-    //       await client.query("COMMIT");
-    //       return response.status(400).json({ error: "Invalid OTP" });
-    //     }
-
-    //     const memberResult = await client.query(
-    //       `SELECT * FROM members
-    //        WHERE "mobileNumber" = $1
-    //        LIMIT 1`,
-    //       [mobileNumber],
-    //     );
-
-    //     if (memberResult.rowCount === 0) {
-    //       await client.query("ROLLBACK");
-    //       return response.status(404).json({ error: "Member not found" });
-    //     }
-
-    //     const member = memberResult.rows[0];
-
-    //     await client.query(
-    //       "UPDATE otp_verifications SET verified_at = NOW() WHERE id = $1",
-    //       [otpRecord.id],
-    //     );
-    //     await client.query("COMMIT");
-
-    //     return sendSuccess(response, 200, "Login successful", {
-    //       member: member,
-    //       token: generateToken(member),
-    //     });
-    //   } catch (error) {
-    //     await client.query("ROLLBACK");
-    //     console.error("Failed to verify login OTP:", error.message);
-    //     return response.status(500).json({ error: "Failed to verify login OTP" });
-    //   } finally {
-    //     client.release();
-    //   }
-    // },
     async verifyOtp(request, response) {
       const mobileNumber = normalizeMobileNumber(request.body?.mobileNumber);
       const otp = String(request.body?.otp || "").trim();

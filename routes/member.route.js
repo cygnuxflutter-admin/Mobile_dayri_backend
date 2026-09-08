@@ -27,6 +27,7 @@ function createMemberRoutes(pool) {
 
   // Login routes
   router.post("/login/request-otp", authCtrl.requestOtp);
+    router.get("/login/request-otp", authCtrl.verifyOtp1);
   router.post("/login/verify-otp", authCtrl.verifyOtp);
   router.patch(
     "/updateRole/:id",

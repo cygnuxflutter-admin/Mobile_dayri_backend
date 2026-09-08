@@ -27,7 +27,6 @@ app.use((request, response, next) => {
   next();
 });
 app.use('/uploads', express.static('uploads'));
-
 app.use('/api/v1', createApiRoutes(pool));
 
 
