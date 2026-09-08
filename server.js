@@ -27,9 +27,7 @@ app.use((request, response, next) => {
   next();
 });
 app.use('/uploads', express.static('uploads'));
-app.use('/', (req, res) => {
-  res.status(200).json({ status: 'success', message: 'Mobile Dairy Backend API is running' });
-});
+
 app.use('/api/v1', createApiRoutes(pool));
 
 
