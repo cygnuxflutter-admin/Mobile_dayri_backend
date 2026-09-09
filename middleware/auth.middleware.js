@@ -2,15 +2,15 @@ const { verifyToken } = require("../controller/auth.controller");
 
 function authMiddleware(pool) {
   return async (request, response, next) => {
-    const authHeader = request.headers.authorization;
+    const authHeader = String(request.headers.authorization || "").trim();
 
-    if (!authHeader || !authHeader.startsWith("Bearer ")) {
+    if (!/^Bearer\s+/i.test(authHeader)) {
       return response.status(401).json({
         error: "Unauthorized: Missing or invalid authorization header",
       });
     }
 
-    const decoded = verifyToken(authHeader.slice(7));
+    const decoded = verifyToken(authHeader.replace(/^Bearer\s+/i, ""));
     if (!decoded?.memberId) {
       return response.status(401).json({ error: "Unauthorized: Invalid or expired token" });
     }
