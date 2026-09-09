@@ -795,128 +795,6 @@ function memberController(pool) {
       }
     },
 
-    // async getAllMembers(request, response) {
-    //   const requestedGender = request.query.gender?.trim();
-
-    //   try {
-    //     const loggedInUser = request.member;
-    //     const userRole = loggedInUser?.role?.trim()?.toUpperCase();
-
-    //     const isAdmin = userRole === "ADMIN" || userRole === "SUPERADMIN";
-
-    //     const selectClause = `
-    //   m.*,
-    //   CONCAT(
-    //     f."firstName", ' ',
-    //     f."middleName", ' ',
-    //     f."surname"
-    //   ) AS "fatherName"
-    // `;
-
-    //     // Build WHERE conditions dynamically
-    //     const conditions = [];
-    //     const values = [];
-
-    //     // USER -> only approved, active and non-deleted members
-    //     // ADMIN / SUPERADMIN -> no restriction
-    //     if (!isAdmin) {
-    //       conditions.push(`
-    //     COALESCE(m."isApproved", false) = true
-    //   `);
-
-    //       conditions.push(`
-    //     COALESCE(m."isActive", false) = true
-    //   `);
-
-    //       conditions.push(`
-    //     COALESCE(m."isDeleted", false) = false
-    //   `);
-    //     }
-
-    //     // Gender filter
-    //     if (requestedGender) {
-    //       values.push(requestedGender);
-
-    //       conditions.push(`
-    //     LOWER(TRIM(m.gender)) = LOWER(TRIM($${values.length}))
-    //   `);
-    //     }
-
-    //     const whereClause =
-    //       conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
-
-    //     const query = `
-    //   SELECT ${selectClause}
-    //   FROM members m
-    //   LEFT JOIN members f ON m."fatherId" = f.id
-    //   ${whereClause}
-    //   ORDER BY
-    //     CASE LOWER(m.gender)
-    //       WHEN 'male' THEN 1
-    //       WHEN 'female' THEN 2
-    //       ELSE 3
-    //     END,
-    //     m.surname ASC,
-    //     m.id ASC
-    // `;
-
-    //     console.log("Logged in role:", userRole);
-    //     console.log("Is admin:", isAdmin);
-    //     console.log("Query:", query);
-    //     console.log("Values:", values);
-
-    //     const result = await pool.query(query, values);
-
-    //     if (!requestedGender) {
-    //       const groupedMembers = {
-    //         male: [],
-    //         female: [],
-    //       };
-
-    //       for (const member of result.rows) {
-    //         const genderKey = member.gender?.trim() || "Other";
-
-    //         const normalizedGender =
-    //           genderKey.toLowerCase() === "male"
-    //             ? "male"
-    //             : genderKey.toLowerCase() === "female"
-    //               ? "female"
-    //               : null;
-
-    //         if (normalizedGender) {
-    //           groupedMembers[normalizedGender].push(member);
-    //         }
-    //       }
-
-    //       await enrichMembersWithSonsNames(groupedMembers.male, pool);
-
-    //       await enrichMembersWithSonsNames(groupedMembers.female, pool);
-
-    //       return sendSuccess(
-    //         response,
-    //         200,
-    //         "Members fetched by gender and surname successfully",
-    //         [groupedMembers],
-    //       );
-    //     }
-
-    //     await enrichMembersWithSonsNames(result.rows, pool);
-
-    //     return sendSuccess(
-    //       response,
-    //       200,
-    //       `${requestedGender} members fetched successfully`,
-    //       result.rows,
-    //     );
-    //   } catch (error) {
-    //     console.error("Failed to fetch members:", error.message);
-
-    //     return response.status(500).json({
-    //       error: "Failed to fetch members",
-    //     });
-    //   }
-    // },
-
     async getAllMembers(request, response) {
       const requestedGender = request.query.gender?.trim();
       const requestedSurname = request.query.surname?.trim();
@@ -1147,66 +1025,7 @@ function memberController(pool) {
       }
     },
 
-    // async getAllMembersBySurname(request, response) {
-    //   const surname = request.query.surname?.trim();
-    //   const gender = request.query.gender?.trim()?.toLowerCase();
-
-    //   if (!surname) {
-    //     return response
-    //       .status(400)
-    //       .json({ error: 'Query parameter "surname" is required' });
-    //   }
-
-    //   try {
-    //     // Always return grouped male/female response like getAllMembers
-    //     const result = await pool.query(
-    //       `SELECT m.*, CONCAT(f."firstName", ' ',f."middleName", ' ',f."surname") AS "fatherName"
-    //        FROM members m
-    //        LEFT JOIN members f ON m."fatherId" = f.id
-    //        WHERE m.surname ILIKE '%' || $1 || '%'
-    //        ORDER BY CASE LOWER(m.gender)
-    //          WHEN 'male' THEN 1
-    //          WHEN 'female' THEN 2
-    //          ELSE 3
-    //        END, m.surname ASC, m.id ASC`,
-    //       [surname],
-    //     );
-
-    //     const groupedMembers = { male: [], female: [] };
-
-    //     for (const member of result.rows) {
-    //       const genderKey = member.gender?.trim() || "Other";
-    //       const normalizedGender =
-    //         genderKey.toLowerCase() === "male"
-    //           ? "male"
-    //           : genderKey.toLowerCase() === "female"
-    //             ? "female"
-    //             : null;
-
-    //       if (normalizedGender) {
-    //         groupedMembers[normalizedGender].push(member);
-    //       }
-    //     }
-
-    //     // Enrich with sons names
-    //     await enrichMembersWithSonsNames(groupedMembers.male, pool);
-    //     await enrichMembersWithSonsNames(groupedMembers.female, pool);
-
-    //     return sendSuccess(
-    //       response,
-    //       200,
-    //       "Members fetched by gender and surname successfully",
-    //       [groupedMembers],
-    //     );
-    //   } catch (error) {
-    //     console.error("Failed to fetch members by surname:", error.message);
-    //     return response
-    //       .status(500)
-    //       .json({ error: "Failed to fetch members by surname" });
-    //   }
-    // },
-
-    async getAllMembersBySurname(request, response) {
+     async getAllMembersBySurname(request, response) {
       const surname = request.query.surname?.trim();
       const gender = request.query.gender?.trim()?.toLowerCase();
 
@@ -1552,148 +1371,7 @@ function memberController(pool) {
       }
     },
 
-    // async updateMember(request, response) {
-    //   const memberId = parseMemberId(request, response);
-
-    //   if (!memberId) {
-    //     return;
-    //   }
-
-    //   const caller = request.member;
-    //   const isElevatedUser =
-    //     caller && (caller.role === "SUPERADMIN" || caller.role === "ADMIN");
-
-    //   // Permission check: Regular user can ONLY update their own profile
-    //   if (!isElevatedUser && caller.id !== memberId) {
-    //     return response.status(403).json({
-    //       error: "Forbidden: You are only allowed to update your own profile",
-    //     });
-    //   }
-
-    //   try {
-    //     const existingResult = await pool.query(
-    //       `SELECT id, "role", "isDeleted" FROM members
-    //        WHERE id = $1 AND COALESCE("isDeleted", false) = false
-    //        LIMIT 1`,
-    //       [memberId],
-    //     );
-
-    //     if (existingResult.rowCount === 0) {
-    //       return response.status(404).json({ error: "Member not found" });
-    //     }
-
-    //     const updateData = { ...request.body };
-
-    //     // Parse types
-    //     if (updateData.age !== undefined && updateData.age !== "") {
-    //       updateData.age = Number(updateData.age);
-    //     }
-    //     if (updateData.fatherId !== undefined && updateData.fatherId !== "") {
-    //       updateData.fatherId =
-    //         updateData.fatherId === null || updateData.fatherId === "null"
-    //           ? null
-    //           : Number(updateData.fatherId);
-    //     }
-    //     if (updateData.sonIds !== undefined) {
-    //       updateData.sonIds = parseRegistrationArray(updateData.sonIds);
-    //     }
-    //     if (updateData.mobileNumber !== undefined) {
-    //       updateData.mobileNumber = normalizeMobileNumber(
-    //         updateData.mobileNumber,
-    //       );
-    //     }
-    //     if (request.file) {
-    //       updateData.photo_url = `/uploads/members/${request.file.filename}`;
-    //     }
-
-    //     const validationError = validateMemberUpdate(updateData);
-    //     if (validationError && !request.file) {
-    //       return response.status(400).json(validationError);
-    //     }
-
-    //     // If mobile number is changing, ensure it's not registered to another member
-    //     if (updateData.mobileNumber) {
-    //       const duplicateCheck = await pool.query(
-    //         `SELECT id FROM members
-    //          WHERE "mobileNumber" = $1 AND id != $2 AND COALESCE("isDeleted", false) = false
-    //          LIMIT 1`,
-    //         [updateData.mobileNumber, memberId],
-    //       );
-    //       if (duplicateCheck.rowCount > 0) {
-    //         return response.status(409).json({
-    //           error: "Mobile number is already registered to another member",
-    //         });
-    //       }
-    //     }
-
-    //     // Whitelist editable member fields
-    //     const allowedFields = [
-    //       "firstName",
-    //       "firstNameEnglish",
-    //       "middleName",
-    //       "middleNameEnglish",
-    //       "surname",
-    //       "surnameEnglish",
-    //       "mobileNumber",
-    //       "gender",
-    //       "dateOfBirth",
-    //       "age",
-    //       "sonIds",
-    //       "fatherId",
-    //       "photo_url",
-    //     ];
-
-    //     const fieldsToUpdate = allowedFields.filter(
-    //       (field) => updateData[field] !== undefined,
-    //     );
-
-    //     if (fieldsToUpdate.length === 0) {
-    //       return response.status(400).json({
-    //         error: "At least one valid member field is required to update",
-    //       });
-    //     }
-
-    //     const values = fieldsToUpdate.map((field) => updateData[field]);
-    //     const assignments = fieldsToUpdate.map(
-    //       (field, index) => `"${field}" = $${index + 1}`,
-    //     );
-
-    //     await pool.query(
-    //       `UPDATE members
-    //        SET ${assignments.join(", ")}, "updated_at" = NOW()
-    //        WHERE id = $${fieldsToUpdate.length + 1}`,
-    //       [...values, memberId],
-    //     );
-
-    //     const memberWithFather = await pool.query(
-    //       `SELECT m.*, CONCAT(f."firstName", ' ', f."middleName", ' ', f."surname") AS "fatherName"
-    //        FROM members m
-    //        LEFT JOIN members f ON m."fatherId" = f.id
-    //        WHERE m.id = $1`,
-    //       [memberId],
-    //     );
-
-    //     // Enrich with sons names
-    //     await enrichMembersWithSonsNames(memberWithFather.rows, pool);
-
-    //     return sendSuccess(
-    //       response,
-    //       200,
-    //       "Member updated successfully",
-    //       memberWithFather.rows[0],
-    //     );
-    //   } catch (error) {
-    //     if (error.code === "23503") {
-    //       return response
-    //         .status(400)
-    //         .json({ error: "fatherId does not reference an existing member" });
-    //     }
-
-    //     console.error("Failed to update member:", error.message);
-    //     return response.status(500).json({ error: "Failed to update member" });
-    //   }
-    // },
-    async updateMember(request, response) {
+     async updateMember(request, response) {
       // Member ID comes from URL params
       const memberId = parseMemberId(request, response);
 
@@ -1704,7 +1382,7 @@ function memberController(pool) {
       // Logged-in user from auth middleware
       const caller = request.member;
 
-      const callerRole = caller?.role?.trim()?.toUpperCase();
+      const callerRole = String(caller?.role || "").trim().toUpperCase();
       const callerId = Number(caller?.id);
 
       // ADMIN and SUPERADMIN can update any member
@@ -1736,6 +1414,9 @@ function memberController(pool) {
         }
 
         const updateData = { ...request.body };
+
+        delete updateData.facmToken;
+        delete updateData.fcmToken;
 
         // -----------------------------
         // Parse / Normalize Fields
