@@ -16,15 +16,14 @@ function normalizeMobileNumber(value) {
 }
 
 async function sendLoginOtp(mobileNumber, otp) {
-  // Temporary/test mode: when explicitly enabled, keep the OTP in the
-  // application logs so the login flow can be tested without an SMS provider.
-  // This does NOT send an SMS to the mobile number.
-  if (process.env.ALLOW_CONSOLE_OTP === "true") {
+  if (
+    process.env.NODE_ENV !== "production" &&
+    process.env.ALLOW_CONSOLE_OTP === "true"
+  ) {
     console.log(`Login OTP for ${mobileNumber}: ${otp}`);
     return;
   }
 
-  // Production SMS provider integration should be added here.
   throw new Error("OTP SMS provider is not configured");
 }
 
@@ -225,10 +224,7 @@ function authController(pool) {
           expiresInSeconds: 300,
         };
 
-        if (
-          process.env.NODE_ENV !== "production" ||
-          process.env.ALLOW_CONSOLE_OTP === "true"
-        ) {
+        if (process.env.NODE_ENV !== "production") {
           responseData.otp = otp;
         }
 
@@ -241,6 +237,22 @@ function authController(pool) {
       } catch (error) {
         console.error("Failed to send login OTP:", error.message);
         return response.status(500).json({ error: "Failed to send login OTP" });
+      }
+    },
+
+    async verifyOtp1(request, response) {
+
+      try {
+
+        return sendSuccess(response, 200, "Login successful", {
+          
+        });
+      } catch (error) {
+        await client.query("ROLLBACK");
+        console.error("Failed to verify login OTP:", error.message);
+        return response.status(500).json({ error: "Failed to verify login OTP" });
+      } finally {
+        client.release();
       }
     },
 
