@@ -73,6 +73,12 @@ function createMemberRoutes(pool) {
     bothAdminMiddleware(),
     controller.setMemberActive,
   );
+  router.patch(
+    "/setMemberActive/:id",
+    authMiddleware(pool),
+    bothAdminMiddleware(),
+    controller.setMemberActive,
+  );
   router.post(
     "/deleteMember/:id",
     authMiddleware(pool),

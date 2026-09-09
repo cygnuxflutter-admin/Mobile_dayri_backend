@@ -1399,7 +1399,7 @@ function memberController(pool) {
       try {
         // Check target member exists and is not deleted
         const existingResult = await pool.query(
-          `SELECT id, "isDeleted"
+          `SELECT id, "isDeleted", "mobileNumber"
        FROM members
        WHERE id = $1
          AND COALESCE("isDeleted", false) = false
@@ -1480,7 +1480,14 @@ function memberController(pool) {
         // Check Duplicate Mobile Number
         // -----------------------------
 
-        if (updateData.mobileNumber) {
+        const existingMobileNumber = normalizeMobileNumber(
+          existingResult.rows[0].mobileNumber,
+        );
+
+        if (
+          updateData.mobileNumber &&
+          updateData.mobileNumber !== existingMobileNumber
+        ) {
           const duplicateCheck = await pool.query(
             `SELECT id
          FROM members
@@ -1640,7 +1647,7 @@ function memberController(pool) {
       try {
         // Check target member exists and is not deleted
         const existingResult = await pool.query(
-          `SELECT id, "isDeleted"
+          `SELECT id, "isDeleted", "mobileNumber"
        FROM members
        WHERE id = $1
          AND COALESCE("isDeleted", false) = false
@@ -1718,7 +1725,14 @@ function memberController(pool) {
         // Check Duplicate Mobile Number
         // -----------------------------
 
-        if (updateData.mobileNumber) {
+        const existingMobileNumber = normalizeMobileNumber(
+          existingResult.rows[0].mobileNumber,
+        );
+
+        if (
+          updateData.mobileNumber &&
+          updateData.mobileNumber !== existingMobileNumber
+        ) {
           const duplicateCheck = await pool.query(
             `SELECT id
          FROM members
