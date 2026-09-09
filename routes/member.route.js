@@ -54,20 +54,20 @@ function createMemberRoutes(pool) {
     controller.getMemberStats,
   );
                                             
-  router.put(
+  router.post(
     "/updateMember/:id",
     authMiddleware(pool),
     memberRegistrationUpload.single("photo"),
     controller.updateMember,
   );
-   router.put(
+   router.post(
     "/updateProfile",
     authMiddleware(pool),
     memberRegistrationUpload.single("photo"),
     controller.updateProfile,
   );
   router.get("/getMember/:id", authMiddleware(pool), controller.getMemberById);
-  router.patch(
+  router.post(
     "/setMemberActive/:id",
     authMiddleware(pool),
     bothAdminMiddleware(),
