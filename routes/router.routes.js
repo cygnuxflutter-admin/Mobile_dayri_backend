@@ -6,7 +6,6 @@ const { createReportRoutes } = require("./report.route");
 const { createEmergencyContactRoutes } = require("./emergencyContact.route");
 const {
   ensureMembersTable,
-  ensureOtpVerificationsTable,
 } = require("../controller/member.controller");
 const {
   ensureNotificationsTable,
@@ -39,7 +38,6 @@ const { ensureEventsTable } = require("../controller/event.controller");
 module.exports = {
   createApiRoutes,
   ensureMembersTable,
-  ensureOtpVerificationsTable,
   ensureNotificationsTable,
   ensureEventsTable,
   ensureEmergencyContactsTable,

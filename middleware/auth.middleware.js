@@ -4,6 +4,8 @@ function authMiddleware(pool) {
   return async (request, response, next) => {
     const authHeader = String(request.headers.authorization || "").trim();
 
+    console.log("Authorization Header:", authHeader);
+
     if (!/^Bearer\s+/i.test(authHeader)) {
       return response.status(401).json({
         error: "Unauthorized: Missing or invalid authorization header",
@@ -22,8 +24,6 @@ function authMiddleware(pool) {
          LIMIT 1`,
         [decoded.memberId],
       );
-
-      console.log("Database query result:", result.rows);
 
       if (result.rowCount === 0 || result.rows[0].isActive === false) {
         return response.status(401).json({ error: "Unauthorized: Inactive or deleted member" });

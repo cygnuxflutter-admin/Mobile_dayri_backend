@@ -3,7 +3,7 @@ require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 const express = require('express');
 const { Pool } = require('pg');
-const { createApiRoutes, ensureMembersTable, ensureOtpVerificationsTable, ensureNotificationsTable, ensureEventsTable, ensureEmergencyContactsTable } = require('./routes/router.routes');
+const { createApiRoutes, ensureMembersTable, ensureNotificationsTable, ensureEventsTable, ensureEmergencyContactsTable } = require('./routes/router.routes');
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -20,7 +20,6 @@ app.use(express.json());
 app.use((request, response, next) => {
   response.on('finish', () => {
     console.log("API URL:", request.originalUrl);
-    console.log("API Body:", request.body);
     console.log("API Response:", response.body);
 
   });
@@ -44,7 +43,6 @@ async function startServer() {
   }
 
   await ensureMembersTable(pool);
-  await ensureOtpVerificationsTable(pool);
   await ensureNotificationsTable(pool);
   await ensureEventsTable(pool);
   await ensureEmergencyContactsTable(pool);

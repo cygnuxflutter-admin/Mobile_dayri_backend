@@ -1,31 +1,9 @@
-const crypto = require("crypto");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
 const { sendSuccess } = require("../utils/response");
 
-function hashOtp(otp) {
-  return crypto.createHash("sha256").update(otp).digest("hex");
-}
-
-function generateOtp() {
-  return String(crypto.randomInt(100000, 1000000));
-}
-
 function normalizeMobileNumber(value) {
   return String(value || "").replace(/[\s()-]/g, "");
-}
-
-async function sendLoginOtp(mobileNumber, otp) {
-  // Temporary/test mode: when explicitly enabled, keep the OTP in the
-  // application logs so the login flow can be tested without an SMS provider.
-  // This does NOT send an SMS to the mobile number.
-  if (process.env.ALLOW_CONSOLE_OTP === "true") {
-    console.log(`Login OTP for ${mobileNumber}: ${otp}`);
-    return;
-  }
-
-  // Production SMS provider integration should be added here.
-  throw new Error("OTP SMS provider is not configured");
 }
 
 const JWT_SECRET =
@@ -63,6 +41,7 @@ function memberResponse(member) {
     profilePhoto: member.photo_url,
     createdAt: member.created_at,
     updatedAt: member.updated_at,
+    isPasswordChange: member.isPasswordChange,
   };
 }
 
@@ -112,7 +91,9 @@ function authController(pool) {
             .json({ error: "Member approval is required" });
         }
 
-        return sendSuccess(response, 200, "Login successful", {
+        console.log("Member logged in successfully:", member.created_at);
+
+        return sendSuccess(response, 200, "Login successfully", {
           member: memberResponse(member),
           token: generateToken(member),
         });
@@ -120,6 +101,26 @@ function authController(pool) {
         console.error("Failed to login member:", error.message);
         return response.status(500).json({ error: "Failed to login" });
       }
+    },
+
+    async hashPassword(request, response) {
+      if (process.env.NODE_ENV === "production") {
+        return response.status(404).json({ error: "Endpoint not found" });
+      }
+
+      const password = String(request.body?.password || "");
+      if (!password) {
+        return response.status(400).json({ error: "password is required" });
+      }
+
+      const passwordHash = await bcrypt.hash(password, 12);
+      return response.status(200).json({
+        success: true,
+        message: "Password hashed successfully",
+        data: {
+          passwordHash,
+        },
+      });
     },
 
     async createSuperAdmin(request, response) {
@@ -164,6 +165,7 @@ function authController(pool) {
       }
     },
 
+    /* Legacy OTP handlers are disabled; password login is the only auth flow.
     async requestOtp(request, response) {
       const mobileNumber = normalizeMobileNumber(request.body?.mobileNumber);
 
@@ -384,6 +386,7 @@ function authController(pool) {
         client.release();
       }
     },
+    */
   };
 }
 
@@ -392,4 +395,5 @@ module.exports = {
   generateToken,
   verifyToken,
   JWT_SECRET,
+  memberResponse,
 };

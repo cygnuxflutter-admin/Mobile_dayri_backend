@@ -19,15 +19,24 @@ function createMemberRoutes(pool) {
 
   // Registration routes
   router.post(
-    "/register/request-otp",
+    "/register",
     memberRegistrationUpload.single("photo"),
-    controller.requestRegistrationOtp,
+    controller.register,
   );
-  router.post("/register/verify-otp", controller.verifyRegistrationOtp);
 
   // Login routes
-  router.post("/login/request-otp", authCtrl.requestOtp);
-  router.post("/login/verify-otp", authCtrl.verifyOtp);
+  router.post("/login", authCtrl.login);
+  router.post("/sample/hashPassword", authCtrl.hashPassword);
+  router.post(
+    "/changePassword",
+    authMiddleware(pool),
+    controller.changePassword,
+  );
+  router.post(
+  "/setPassword/:id?",
+  authMiddleware(pool),
+  controller.setPassword,
+);
   router.patch(
     "/updateRole/:id",
     authMiddleware(pool),

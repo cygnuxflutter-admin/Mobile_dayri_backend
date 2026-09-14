@@ -1,9 +1,9 @@
-const crypto = require("crypto");
+const bcrypt = require("bcryptjs");
 const fs = require("fs");
 const path = require("path");
 const multer = require("multer");
 const { sendSuccess } = require("../utils/response");
-const { generateToken } = require("./auth.controller");
+const { generateToken, memberResponse } = require("./auth.controller");
 
 const memberUploadDir = path.join(__dirname, "..", "uploads", "members");
 if (!fs.existsSync(memberUploadDir)) {
@@ -76,6 +76,8 @@ const createMembersTable = `
     surname TEXT NOT NULL,
     "surnameEnglish" TEXT NOT NULL,
     "mobileNumber" TEXT NOT NULL,
+    "passwordHash" TEXT,
+    "isPasswordChange" BOOLEAN NOT NULL DEFAULT FALSE,
     gender TEXT NOT NULL,
     "dateOfBirth" TEXT NOT NULL,
     age INTEGER NOT NULL CHECK (age >= 0),
@@ -93,19 +95,6 @@ const createMembersTable = `
     "role" TEXT NOT NULL DEFAULT 'USER' CHECK ("role" IN ('USER', 'ADMIN', 'SUPERADMIN')),
     "sonIds" BIGINT[],
     "fatherId" BIGINT REFERENCES members(id) ON DELETE SET NULL
-  )
-`;
-
-const createOtpVerificationsTable = `
-  CREATE TABLE IF NOT EXISTS otp_verifications (
-    id BIGSERIAL PRIMARY KEY,
-    mobile_number TEXT NOT NULL,
-    otp_hash TEXT NOT NULL,
-    pending_member JSONB NOT NULL,
-    expires_at TIMESTAMPTZ NOT NULL,
-    attempts INTEGER NOT NULL DEFAULT 0,
-    verified_at TIMESTAMPTZ,
-    created_at TIMESTAMPTZ DEFAULT NOW()
   )
 `;
 
@@ -146,14 +135,6 @@ function buildRegistrationPayload(body, file) {
   };
 }
 
-function hashOtp(otp) {
-  return crypto.createHash("sha256").update(otp).digest("hex");
-}
-
-function generateOtp() {
-  return String(crypto.randomInt(100000, 1000000));
-}
-
 async function syncMemberSequence(pool) {
   await pool.query(`
     SELECT setval(
@@ -162,22 +143,6 @@ async function syncMemberSequence(pool) {
       false
     );
   `);
-}
-
-async function ensureOtpVerificationsTable(pool) {
-  await pool.query(createOtpVerificationsTable);
-}
-
-async function sendRegistrationOtp(mobileNumber, otp) {
-  if (
-    process.env.NODE_ENV !== "production" &&
-    process.env.ALLOW_CONSOLE_OTP === "true"
-  ) {
-    console.log(`Registration OTP for ${mobileNumber}: ${otp}`);
-    return;
-  }
-
-  throw new Error("OTP SMS provider is not configured");
 }
 
 async function ensureMembersTable(pool) {
@@ -206,6 +171,8 @@ async function ensureMembersTable(pool) {
     ADD COLUMN IF NOT EXISTS "created_at" TIMESTAMPTZ DEFAULT NOW(),
     ADD COLUMN IF NOT EXISTS "updated_at" TIMESTAMPTZ DEFAULT NOW(),
     ADD COLUMN IF NOT EXISTS "photo_url" TEXT,
+    ADD COLUMN IF NOT EXISTS "passwordHash" TEXT,
+    ADD COLUMN IF NOT EXISTS "isPasswordChange" BOOLEAN NOT NULL DEFAULT FALSE,
     ADD COLUMN IF NOT EXISTS "fcmToken" TEXT,
     ADD COLUMN IF NOT EXISTS "role" TEXT DEFAULT 'USER'
   `);
@@ -239,6 +206,9 @@ function validateMember(member) {
 
   if (!Number.isInteger(member.age) || member.age < 0) {
     return { error: "age must be a non-negative integer" };
+  }
+  if (!/^\d{10}$/.test(member.mobileNumber)) {
+    return { error: "mobileNumber must be a valid 10-digit number" };
   }
   console.log("Validating member:", member.fatherId);
   // if (
@@ -373,6 +343,245 @@ async function enrichMembersWithSonsNames(members, pool) {
 
 function memberController(pool) {
   return {
+    async register(request, response) {
+      const payload = buildRegistrationPayload(request.body, request.file);
+      const password = String(request.body?.password || "");
+      const confirmPassword = String(request.body?.confirmPassword || "");
+
+      if (!password || !confirmPassword) {
+        return response.status(400).json({
+          error: "password and confirmPassword are required",
+        });
+      }
+      if (password !== confirmPassword) {
+        return response.status(400).json({ error: "Passwords do not match" });
+      }
+      const validationError = validateMember(payload);
+      if (validationError) {
+        return response.status(400).json(validationError);
+      }
+
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+        const existingMember = await client.query(
+          `SELECT id FROM members
+           WHERE "mobileNumber" = $1 AND COALESCE("isDeleted", false) = false
+           LIMIT 1`,
+          [payload.mobileNumber],
+        );
+        if (existingMember.rowCount > 0) {
+          await client.query("ROLLBACK");
+          return response.status(409).json({
+            error: "Mobile number is already registered",
+          });
+        }
+
+        const passwordHash = await bcrypt.hash(password, 12);
+        await syncMemberSequence(client);
+        const memberResult = await client.query(
+          `INSERT INTO members (
+              "firstName", "firstNameEnglish", "middleName", "middleNameEnglish",
+              surname, "surnameEnglish", "mobileNumber", "passwordHash", gender,
+              "dateOfBirth", age, "currentAddress", "latlng", "sonIds", "fatherId",
+              "photo_url", "created_at", "fcmToken"
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NOW(), $17)
+            RETURNING *`,
+          [
+            payload.firstName,
+            payload.firstNameEnglish,
+            payload.middleName,
+            payload.middleNameEnglish,
+            payload.surname,
+            payload.surnameEnglish,
+            payload.mobileNumber,
+            passwordHash,
+            payload.gender,
+            payload.dateOfBirth,
+            payload.age,
+            payload.currentAddress,
+            payload.latlng,
+            payload.sonIds,
+            payload.fatherId,
+            payload.photoUrl,
+            payload.fcmToken,
+          ],
+        );
+        await client.query("COMMIT");
+
+        const member = memberResult.rows[0];
+        return sendSuccess(response, 200, "Register Successfully", {
+          member: memberResponse(member),
+          token: generateToken(member),
+        });
+      } catch (error) {
+        await client.query("ROLLBACK");
+        if (error.code === "23503") {
+          return response.status(400).json({
+            error: "fatherId does not reference an existing member",
+          });
+        }
+        console.error("Failed to register member:", error.message);
+        return response
+          .status(500)
+          .json({ error: "Failed to register member" });
+      } finally {
+        client.release();
+      }
+    },
+
+    async changePassword(request, response) {
+      const oldPassword = String(request.body?.oldPassword || "");
+      const newPassword = String(request.body?.newPassword || "");
+      const confirmPassword = String(request.body?.confirmPassword || "");
+
+      if (!oldPassword || !newPassword || !confirmPassword) {
+        return response.status(400).json({
+          error: "oldPassword, newPassword and confirmPassword are required",
+        });
+      }
+      if (newPassword !== confirmPassword) {
+        return response.status(400).json({ error: "Passwords do not match" });
+      }
+      if (newPassword === oldPassword) {
+        return response.status(400).json({
+          error: "New password must be different from old password",
+        });
+      }
+
+      try {
+        const memberResult = await pool.query(
+          `SELECT id, "passwordHash" FROM members
+           WHERE id = $1 AND COALESCE("isDeleted", false) = false
+           LIMIT 1`,
+          [request.member.id],
+        );
+
+        if (memberResult.rowCount === 0 || !memberResult.rows[0].passwordHash) {
+          return response.status(401).json({ error: "Invalid old password" });
+        }
+
+        const passwordMatches = await bcrypt.compare(
+          oldPassword,
+          memberResult.rows[0].passwordHash,
+        );
+        if (!passwordMatches) {
+          return response.status(401).json({ error: "Invalid old password" });
+        }
+
+        const passwordHash = await bcrypt.hash(newPassword, 12);
+        await pool.query(
+          `UPDATE members
+           SET "passwordHash" = $1, "updated_at" = NOW()
+           WHERE id = $2`,
+          [passwordHash, request.member.id],
+        );
+
+        return sendSuccess(response, 200, "Password changed successfully");
+      } catch (error) {
+        console.error("Failed to change member password:", error.message);
+        return response
+          .status(500)
+          .json({ error: "Failed to change password" });
+      }
+    },
+
+    async setPassword(request, response) {
+      const hasIdParam =
+        request.params?.id !== undefined &&
+        request.params?.id !== null &&
+        request.params?.id !== "";
+      const oldPassword = String(request.body?.oldPassword || "");
+      const newPassword = String(request.body?.newPassword || "");
+      const confirmPassword = String(request.body?.confirmPassword || "");
+
+      let memberId;
+      let isSelfChange = false;
+
+      if (!hasIdParam) {
+        // URL ma :id nathi -> token mathi logged-in user no id levano
+        memberId = Number(request.member?.id);
+        isSelfChange = true;
+
+        if (!memberId) {
+          return response
+            .status(401)
+            .json({ error: "Invalid or missing user token" });
+        }
+      } else {
+        // URL ma :id che -> requester ADMIN/SUPERADMIN j hovo joie
+        const requesterRole = String(request.member?.role || "").toUpperCase();
+        const isAdmin =
+          requesterRole === "ADMIN" || requesterRole === "SUPERADMIN";
+
+        if (!isAdmin) {
+          return response.status(403).json({
+            error:
+              "Only ADMIN or SUPERADMIN can set password for other accounts",
+          });
+        }
+
+        memberId = parseMemberId(request, response);
+        if (!memberId) {
+          return;
+        }
+      }
+
+      if (!oldPassword || !newPassword || !confirmPassword) {
+        return response.status(400).json({
+          error: "oldPassword, newPassword and confirmPassword are required",
+        });
+      }
+      if (newPassword !== confirmPassword) {
+        return response.status(400).json({ error: "Passwords do not match" });
+      }
+      if (newPassword.length < 6) {
+        return response.status(400).json({
+          error: "Password must be at least 6 characters",
+        });
+      }
+
+      try {
+        const memberResult = await pool.query(
+          `SELECT "passwordHash" FROM members
+           WHERE id = $1 AND COALESCE("isDeleted", false) = false
+           LIMIT 1`,
+          [memberId],
+        );
+
+        if (
+          memberResult.rowCount === 0 ||
+          !memberResult.rows[0].passwordHash ||
+          !(await bcrypt.compare(oldPassword, memberResult.rows[0].passwordHash))
+        ) {
+          return response.status(401).json({ error: "Invalid old password" });
+        }
+
+        const passwordHash = await bcrypt.hash(newPassword, 12);
+
+        const queryText = `UPDATE members
+         SET "passwordHash" = $1, "isPasswordChange" = true, "updated_at" = NOW()
+         WHERE id = $2
+           AND COALESCE("isDeleted", false) = false
+         RETURNING id`;
+
+        const result = await pool.query(queryText, [passwordHash, memberId]);
+
+        if (result.rowCount === 0) {
+          return response.status(409).json({
+            error: isSelfChange
+              ? "Unable to update password for this account"
+              : "Password is already set for this account",
+          });
+        }
+
+        return sendSuccess(response, 200, "Password set successfully");
+      } catch (error) {
+        console.error("Failed to set member password:", error.message);
+        return response.status(500).json({ error: "Failed to set password" });
+      }
+    },
+
     async updateMemberRole(request, response) {
       const memberId = parseMemberId(request, response);
       const { role } = request.body;
@@ -498,6 +707,7 @@ function memberController(pool) {
       }
     },
 
+    /* Legacy OTP registration handlers are disabled; registration is direct.
     async requestRegistrationOtp1(request, response) {
       const payload = buildRegistrationPayload(request.body, request.file);
       const validationError = validateMember(payload);
@@ -795,6 +1005,7 @@ function memberController(pool) {
       }
     },
 
+    */
     async getAllMembers(request, response) {
       const requestedGender = request.query.gender?.trim();
       const requestedSurname = request.query.surname?.trim();
@@ -1025,7 +1236,7 @@ function memberController(pool) {
       }
     },
 
-     async getAllMembersBySurname(request, response) {
+    async getAllMembersBySurname(request, response) {
       const surname = request.query.surname?.trim();
       const gender = request.query.gender?.trim()?.toLowerCase();
 
@@ -1371,7 +1582,7 @@ function memberController(pool) {
       }
     },
 
-     async updateMember(request, response) {
+    async updateMember(request, response) {
       // Member ID comes from URL params
       const memberId = parseMemberId(request, response);
 
@@ -1382,7 +1593,9 @@ function memberController(pool) {
       // Logged-in user from auth middleware
       const caller = request.member;
 
-      const callerRole = String(caller?.role || "").trim().toUpperCase();
+      const callerRole = String(caller?.role || "")
+        .trim()
+        .toUpperCase();
       const callerId = Number(caller?.id);
 
       // ADMIN and SUPERADMIN can update any member
@@ -1873,5 +2086,4 @@ module.exports = {
   memberRegistrationUpload,
 
   ensureMembersTable,
-  ensureOtpVerificationsTable,
 };
