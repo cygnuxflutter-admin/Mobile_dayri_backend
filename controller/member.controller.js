@@ -470,14 +470,19 @@ function memberController(pool) {
         }
 
         const passwordHash = await bcrypt.hash(newPassword, 12);
-        await pool.query(
+        const updatedMemberResult = await pool.query(
           `UPDATE members
-           SET "passwordHash" = $1, "updated_at" = NOW()
-           WHERE id = $2`,
+           SET "passwordHash" = $1, "updated_at" = NOW(), "isPasswordChange" = true
+           WHERE id = $2
+           RETURNING *`,
           [passwordHash, request.member.id],
         );
 
-        return sendSuccess(response, 200, "Password changed successfully");
+        const updatedMember = updatedMemberResult.rows[0];
+        return sendSuccess(response, 200, "Password changed successfully", {
+          member: memberResponse(updatedMember),
+          token: generateToken(updatedMember),
+        });
       } catch (error) {
         console.error("Failed to change member password:", error.message);
         return response
