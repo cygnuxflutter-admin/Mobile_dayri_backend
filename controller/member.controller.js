@@ -161,6 +161,16 @@ async function ensureMembersTable(pool) {
 
   await pool.query(`
     ALTER TABLE members
+    ADD COLUMN IF NOT EXISTS "firstName" TEXT,
+    ADD COLUMN IF NOT EXISTS "firstNameEnglish" TEXT,
+    ADD COLUMN IF NOT EXISTS "middleName" TEXT,
+    ADD COLUMN IF NOT EXISTS "middleNameEnglish" TEXT,
+    ADD COLUMN IF NOT EXISTS surname TEXT,
+    ADD COLUMN IF NOT EXISTS "surnameEnglish" TEXT,
+    ADD COLUMN IF NOT EXISTS "mobileNumber" TEXT,
+    ADD COLUMN IF NOT EXISTS gender TEXT,
+    ADD COLUMN IF NOT EXISTS "dateOfBirth" TEXT,
+    ADD COLUMN IF NOT EXISTS age INTEGER,
     ADD COLUMN IF NOT EXISTS "isActive" BOOLEAN DEFAULT TRUE,
     ADD COLUMN IF NOT EXISTS "isDeleted" BOOLEAN DEFAULT FALSE,
     ADD COLUMN IF NOT EXISTS "deletedBy" BIGINT REFERENCES members(id) ON DELETE SET NULL,
@@ -171,10 +181,14 @@ async function ensureMembersTable(pool) {
     ADD COLUMN IF NOT EXISTS "created_at" TIMESTAMPTZ DEFAULT NOW(),
     ADD COLUMN IF NOT EXISTS "updated_at" TIMESTAMPTZ DEFAULT NOW(),
     ADD COLUMN IF NOT EXISTS "photo_url" TEXT,
+    ADD COLUMN IF NOT EXISTS "currentAddress" TEXT,
+    ADD COLUMN IF NOT EXISTS latlng TEXT,
     ADD COLUMN IF NOT EXISTS "passwordHash" TEXT,
     ADD COLUMN IF NOT EXISTS "isPasswordChange" BOOLEAN NOT NULL DEFAULT FALSE,
     ADD COLUMN IF NOT EXISTS "fcmToken" TEXT,
-    ADD COLUMN IF NOT EXISTS "role" TEXT DEFAULT 'USER'
+    ADD COLUMN IF NOT EXISTS "role" TEXT DEFAULT 'USER',
+    ADD COLUMN IF NOT EXISTS "sonIds" BIGINT[],
+    ADD COLUMN IF NOT EXISTS "fatherId" BIGINT REFERENCES members(id) ON DELETE SET NULL
   `);
   await pool.query(`
     UPDATE members SET "isApproved" = FALSE WHERE "isApproved" IS NULL;
