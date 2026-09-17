@@ -76,8 +76,6 @@ const createMembersTable = `
     surname TEXT NOT NULL,
     "surnameEnglish" TEXT NOT NULL,
     "mobileNumber" TEXT NOT NULL,
-    "passwordHash" TEXT,
-    "isPasswordChange" BOOLEAN NOT NULL DEFAULT FALSE,
     gender TEXT NOT NULL,
     "dateOfBirth" TEXT NOT NULL,
     age INTEGER NOT NULL CHECK (age >= 0),
@@ -86,15 +84,17 @@ const createMembersTable = `
     "deletedBy" BIGINT REFERENCES members(id) ON DELETE SET NULL,
     "isApproved" BOOLEAN DEFAULT FALSE,
     "approvedBy" BIGINT REFERENCES members(id) ON DELETE SET NULL,
-    "created_at" TIMESTAMPTZ DEFAULT NOW(),
+"created_at" TIMESTAMPTZ DEFAULT NOW(),
     "updated_at" TIMESTAMPTZ DEFAULT NOW(),
     "photo_url" TEXT,
     "currentAddress" TEXT,
     "latlng" TEXT,
-    "fcmToken" TEXT,
-    "role" TEXT NOT NULL DEFAULT 'USER' CHECK ("role" IN ('USER', 'ADMIN', 'SUPERADMIN')),
+"role" TEXT NOT NULL DEFAULT 'USER' CHECK ("role" IN ('USER', 'ADMIN', 'SUPERADMIN')),
     "sonIds" BIGINT[],
     "fatherId" BIGINT REFERENCES members(id) ON DELETE SET NULL
+    "fcmToken" TEXT,
+    "passwordHash" TEXT,
+    "isPasswordChange" BOOLEAN NOT NULL DEFAULT FALSE,
   )
 `;
 
@@ -569,7 +569,10 @@ function memberController(pool) {
         if (
           memberResult.rowCount === 0 ||
           !memberResult.rows[0].passwordHash ||
-          !(await bcrypt.compare(oldPassword, memberResult.rows[0].passwordHash))
+          !(await bcrypt.compare(
+            oldPassword,
+            memberResult.rows[0].passwordHash,
+          ))
         ) {
           return response.status(401).json({ error: "Invalid old password" });
         }
