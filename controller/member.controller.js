@@ -84,17 +84,17 @@ const createMembersTable = `
     "deletedBy" BIGINT REFERENCES members(id) ON DELETE SET NULL,
     "isApproved" BOOLEAN DEFAULT FALSE,
     "approvedBy" BIGINT REFERENCES members(id) ON DELETE SET NULL,
-"created_at" TIMESTAMPTZ DEFAULT NOW(),
+  "created_at" TIMESTAMPTZ DEFAULT NOW(),
     "updated_at" TIMESTAMPTZ DEFAULT NOW(),
     "photo_url" TEXT,
     "currentAddress" TEXT,
     "latlng" TEXT,
-"role" TEXT NOT NULL DEFAULT 'USER' CHECK ("role" IN ('USER', 'ADMIN', 'SUPERADMIN')),
+  "role" TEXT NOT NULL DEFAULT 'USER' CHECK ("role" IN ('USER', 'ADMIN', 'SUPERADMIN')),
     "sonIds" BIGINT[],
-    "fatherId" BIGINT REFERENCES members(id) ON DELETE SET NULL
+  "fatherId" BIGINT REFERENCES members(id) ON DELETE SET NULL,
     "fcmToken" TEXT,
     "passwordHash" TEXT,
-    "isPasswordChange" BOOLEAN NOT NULL DEFAULT FALSE,
+  "isPasswordChange" BOOLEAN NOT NULL DEFAULT FALSE
   )
 `;
 
@@ -186,7 +186,7 @@ async function ensureMembersTable(pool) {
     ADD COLUMN IF NOT EXISTS "fatherId" BIGINT REFERENCES members(id) ON DELETE SET NULL,
     ADD COLUMN IF NOT EXISTS "fcmToken" TEXT,
     ADD COLUMN IF NOT EXISTS "passwordHash" TEXT,
-    ADD COLUMN IF NOT EXISTS "isPasswordChange" BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS "isPasswordChange" BOOLEAN NOT NULL DEFAULT FALSE
   `);
   await pool.query(`
     UPDATE members SET "isApproved" = FALSE WHERE "isApproved" IS NULL;
