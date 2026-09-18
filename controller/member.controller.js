@@ -4,6 +4,7 @@ const path = require("path");
 const multer = require("multer");
 const { sendSuccess } = require("../utils/response");
 const { generateToken, memberResponse } = require("./auth.controller");
+const { processRelationshipRequest } = require("./relationship.controller");
 
 const memberUploadDir = path.join(__dirname, "..", "uploads", "members");
 if (!fs.existsSync(memberUploadDir)) {
@@ -114,6 +115,27 @@ function parseRegistrationArray(value) {
       .split(",")
       .map((item) => Number(item.trim()));
   }
+}
+
+function normalizeSonIds(body) {
+  const rawValue =
+    body?.sonIds ?? body?.["sonIds[]"] ?? body?.sons ?? body?.["sons[]"];
+
+  if (
+    rawValue === undefined ||
+    rawValue === null ||
+    rawValue === "" ||
+    rawValue === "null" ||
+    rawValue === "[]"
+  ) {
+    return { provided: rawValue !== undefined, value: null };
+  }
+
+  const parsedIds = parseRegistrationArray(rawValue).filter(
+    (id) => Number.isInteger(id) && id > 0,
+  );
+
+  return { provided: true, value: [...new Set(parsedIds)] };
 }
 
 function buildRegistrationPayload(body, file) {
@@ -351,6 +373,112 @@ async function enrichMembersWithSonsNames(members, pool) {
   });
 
   return members;
+}
+
+async function handleRelationshipUpdate(
+  pool,
+  memberId,
+  existingMember,
+  updateData,
+) {
+  const existingFatherId = existingMember.fatherId
+    ? Number(existingMember.fatherId)
+    : null;
+  const existingSonIds = Array.isArray(existingMember.sonIds)
+    ? existingMember.sonIds.map(Number)
+    : [];
+  const pendingRequestsCreated = [];
+
+  // 1. Father handling
+  if (updateData.fatherId !== undefined) {
+    if (
+      updateData.fatherId === null ||
+      updateData.fatherId === "" ||
+      updateData.fatherId === "null" ||
+      updateData.fatherId === 0 ||
+      updateData.fatherId === "0"
+    ) {
+      // Immediate removal of existing father
+      if (existingFatherId) {
+        await pool.query(
+          `UPDATE members SET "sonIds" = array_remove("sonIds", $1::bigint), "updated_at" = NOW() WHERE id = $2`,
+          [memberId, existingFatherId],
+        );
+      }
+      // Cancel pending father requests if any
+      await pool.query(
+        `UPDATE relationship_requests SET status = 'CANCELLED', updated_at = NOW() WHERE requester_id = $1 AND relationship_type = 'FATHER' AND status = 'PENDING'`,
+        [memberId],
+      );
+      updateData.fatherId = null;
+    } else {
+      const requestedFatherId = Number(updateData.fatherId);
+      if (requestedFatherId === existingFatherId) {
+        // No change, omit from direct column update
+        delete updateData.fatherId;
+      } else {
+        // Approval-based: Do NOT set fatherId on member immediately
+        delete updateData.fatherId;
+        const reqRecord = await processRelationshipRequest(
+          pool,
+          memberId,
+          requestedFatherId,
+          "FATHER",
+        );
+        pendingRequestsCreated.push({
+          type: "FATHER",
+          targetId: requestedFatherId,
+          requestId: reqRecord.id,
+        });
+      }
+    }
+  }
+
+  // 2. Son handling
+  if (updateData.sonIds !== undefined) {
+    const requestedSonIds = Array.isArray(updateData.sonIds)
+      ? updateData.sonIds.map(Number).filter(Number.isInteger)
+      : [];
+
+    // A) Removed sons (was in existing, but not in requested) -> immediate unlinking
+    const removedSons = existingSonIds.filter(
+      (id) => !requestedSonIds.includes(id),
+    );
+    for (const sonId of removedSons) {
+      await pool.query(
+        `UPDATE members SET "fatherId" = NULL, "updated_at" = NOW() WHERE id = $1 AND "fatherId" = $2`,
+        [sonId, memberId],
+      );
+    }
+
+    // B) Retained sons (in both)
+    const retainedSons = existingSonIds.filter((id) =>
+      requestedSonIds.includes(id),
+    );
+
+    // C) Newly added sons (in requested, not in existing) -> pending approval
+    const newlyAddedSons = requestedSonIds.filter(
+      (id) => !existingSonIds.includes(id),
+    );
+    for (const sonId of newlyAddedSons) {
+      const reqRecord = await processRelationshipRequest(
+        pool,
+        memberId,
+        sonId,
+        "SON",
+      );
+      pendingRequestsCreated.push({
+        type: "SON",
+        targetId: sonId,
+        requestId: reqRecord.id,
+      });
+    }
+
+    // Active sonIds column retains only approved sons
+    updateData.sonIds = retainedSons.length > 0 ? retainedSons : null;
+  }
+
+  return pendingRequestsCreated;
 }
 
 function memberController(pool) {
@@ -1141,6 +1269,55 @@ function memberController(pool) {
       }
     },
 
+    async getUpcomingBirthdays(request, response) {
+      try {
+        const result = await pool.query(`
+          WITH parsed_members AS (
+            SELECT
+              m.*,
+              CASE
+                WHEN TRIM(m."dateOfBirth") ~ '^[0-9]{2}-[0-9]{2}-[0-9]{4}$'
+                  THEN TO_DATE(TRIM(m."dateOfBirth"), 'DD-MM-YYYY')
+                WHEN TRIM(m."dateOfBirth") ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+                  THEN TO_DATE(TRIM(m."dateOfBirth"), 'YYYY-MM-DD')
+                ELSE NULL
+              END AS birth_date
+            FROM members m
+            WHERE COALESCE(m."isDeleted", false) = false
+              AND COALESCE(m."isActive", true) = true
+          )
+          SELECT
+            p.*,
+            upcoming.day::date AS "upcomingBirthday"
+          FROM parsed_members p
+          CROSS JOIN LATERAL (
+            SELECT day
+            FROM generate_series(
+              CURRENT_DATE,
+              CURRENT_DATE + INTERVAL '7 days',
+              INTERVAL '1 day'
+            ) AS day
+            WHERE TO_CHAR(day, 'MMDD') = TO_CHAR(p.birth_date, 'MMDD')
+            ORDER BY day
+            LIMIT 1
+          ) upcoming
+          ORDER BY upcoming.day, p."firstName", p.surname
+        `);
+
+        return sendSuccess(
+          response,
+          200,
+          "Upcoming birthdays fetched successfully",
+          result.rows,
+        );
+      } catch (error) {
+        console.error("Failed to fetch upcoming birthdays:", error.message);
+        return response
+          .status(500)
+          .json({ error: "Failed to fetch upcoming birthdays" });
+      }
+    },
+
     async getProfile(request, response) {
       try {
         // Member ID comes from Authorization header
@@ -1190,6 +1367,33 @@ function memberController(pool) {
 
         // Get sons names
         await enrichMembersWithSonsNames([member], pool);
+
+        // Fetch pending outgoing relationship requests
+        const pendingOutgoing = await pool.query(
+          `SELECT r.id, r.target_id, r.relationship_type, r.status, r.created_at,
+                  CONCAT(m."firstName", ' ', m."middleName", ' ', m."surname") AS "targetName",
+                  m."photo_url" AS "targetPhotoUrl"
+           FROM relationship_requests r
+           JOIN members m ON r.target_id = m.id
+           WHERE r.requester_id = $1 AND r.status = 'PENDING'
+           ORDER BY r.created_at DESC`,
+          [memberId],
+        );
+
+        // Fetch pending incoming relationship requests
+        const pendingIncoming = await pool.query(
+          `SELECT r.id, r.requester_id, r.relationship_type, r.status, r.created_at,
+                  CONCAT(m."firstName", ' ', m."middleName", ' ', m."surname") AS "requesterName",
+                  m."photo_url" AS "requesterPhotoUrl"
+           FROM relationship_requests r
+           JOIN members m ON r.requester_id = m.id
+           WHERE r.target_id = $1 AND r.status = 'PENDING'
+           ORDER BY r.created_at DESC`,
+          [memberId],
+        );
+
+        member.pendingOutgoingRequests = pendingOutgoing.rows;
+        member.pendingIncomingRequests = pendingIncoming.rows;
 
         return sendSuccess(
           response,
@@ -1275,8 +1479,8 @@ function memberController(pool) {
 
       try {
         let query = `
-      SELECT 
-        m.*, 
+      SELECT
+        m.*,
         CONCAT(
           f."firstName", ' ',
           f."middleName", ' ',
@@ -1296,7 +1500,7 @@ function memberController(pool) {
         }
 
         query += `
-      ORDER BY 
+      ORDER BY
         CASE LOWER(m.gender)
           WHEN 'male' THEN 1
           WHEN 'female' THEN 2
@@ -1632,7 +1836,7 @@ function memberController(pool) {
       try {
         // Check target member exists and is not deleted
         const existingResult = await pool.query(
-          `SELECT id, "isDeleted", "mobileNumber"
+          `SELECT id, "isDeleted", "mobileNumber", "fatherId", "sonIds"
        FROM members
        WHERE id = $1
          AND COALESCE("isDeleted", false) = false
@@ -1673,19 +1877,12 @@ function memberController(pool) {
         }
 
         // sonIds
-        if (updateData.sonIds !== undefined) {
-          if (
-            updateData.sonIds === null ||
-            updateData.sonIds === "" ||
-            updateData.sonIds === "null" ||
-            (Array.isArray(updateData.sonIds) &&
-              updateData.sonIds.length === 0) ||
-            updateData.sonIds === "[]"
-          ) {
-            updateData.sonIds = null;
-          } else {
-            updateData.sonIds = parseRegistrationArray(updateData.sonIds);
-          }
+        const normalizedSonIds = normalizeSonIds(updateData);
+        if (normalizedSonIds.provided) {
+          updateData.sonIds = normalizedSonIds.value;
+          delete updateData["sonIds[]"];
+          delete updateData.sons;
+          delete updateData["sons[]"];
         }
 
         if (updateData.mobileNumber !== undefined) {
@@ -1739,6 +1936,26 @@ function memberController(pool) {
         }
 
         // -----------------------------
+        // Handle Approval-based Relationships
+        // -----------------------------
+        let pendingRequestsCreated = [];
+        if (
+          updateData.fatherId !== undefined ||
+          updateData.sonIds !== undefined
+        ) {
+          try {
+            pendingRequestsCreated = await handleRelationshipUpdate(
+              pool,
+              memberId,
+              existingResult.rows[0],
+              updateData,
+            );
+          } catch (relError) {
+            return response.status(400).json({ error: relError.message });
+          }
+        }
+
+        // -----------------------------
         // Allowed Editable Fields
         // -----------------------------
 
@@ -1767,7 +1984,10 @@ function memberController(pool) {
           (field) => updateData[field] !== undefined,
         );
 
-        if (fieldsToUpdate.length === 0) {
+        if (
+          fieldsToUpdate.length === 0 &&
+          pendingRequestsCreated.length === 0
+        ) {
           return response.status(400).json({
             error: "At least one valid member field is required to update",
           });
@@ -1777,19 +1997,20 @@ function memberController(pool) {
         // Build Dynamic UPDATE Query
         // -----------------------------
 
-        const values = fieldsToUpdate.map((field) => updateData[field]);
+        if (fieldsToUpdate.length > 0) {
+          const values = fieldsToUpdate.map((field) => updateData[field]);
+          const assignments = fieldsToUpdate.map(
+            (field, index) => `"${field}" = $${index + 1}`,
+          );
 
-        const assignments = fieldsToUpdate.map(
-          (field, index) => `"${field}" = $${index + 1}`,
-        );
-
-        await pool.query(
-          `UPDATE members
-       SET ${assignments.join(", ")},
-           "updated_at" = NOW()
-       WHERE id = $${fieldsToUpdate.length + 1}`,
-          [...values, memberId],
-        );
+          await pool.query(
+            `UPDATE members
+         SET ${assignments.join(", ")},
+             "updated_at" = NOW()
+         WHERE id = $${fieldsToUpdate.length + 1}`,
+            [...values, memberId],
+          );
+        }
 
         // -----------------------------
         // Get Updated Member
@@ -1797,35 +2018,52 @@ function memberController(pool) {
 
         const memberWithFather = await pool.query(
           `SELECT
-         m.*,
-         CONCAT(
-           f."firstName",
-           ' ',
-           f."middleName",
-           ' ',
-           f."surname"
-         ) AS "fatherName"
-       FROM members m
-       LEFT JOIN members f
-         ON m."fatherId" = f.id
-       WHERE m.id = $1`,
+          m.*,
+          CONCAT(
+            f."firstName",
+            ' ',
+            f."middleName",
+            ' ',
+            f."surname"
+          ) AS "fatherName"
+        FROM members m
+        LEFT JOIN members f
+          ON m."fatherId" = f.id
+        WHERE m.id = $1`,
           [memberId],
         );
 
         // -----------------------------
-        // Enrich Sons Names
+        // Enrich Sons Names & Pending Requests
         // -----------------------------
 
         await enrichMembersWithSonsNames(memberWithFather.rows, pool);
+
+        const pendingOutgoing = await pool.query(
+          `SELECT r.id, r.target_id, r.relationship_type, r.status, r.created_at,
+                  CONCAT(m."firstName", ' ', m."middleName", ' ', m."surname") AS "targetName",
+                  m."photo_url" AS "targetPhotoUrl"
+           FROM relationship_requests r
+           JOIN members m ON r.target_id = m.id
+           WHERE r.requester_id = $1 AND r.status = 'PENDING'
+           ORDER BY r.created_at DESC`,
+          [memberId],
+        );
+        memberWithFather.rows[0].pendingOutgoingRequests = pendingOutgoing.rows;
 
         // -----------------------------
         // Success Response
         // -----------------------------
 
+        const successMessage =
+          pendingRequestsCreated.length > 0
+            ? "Member updated. Relationship requests have been sent for approval."
+            : "Member profile updated successfully";
+
         return sendSuccess(
           response,
           200,
-          "Member profile updated successfully",
+          successMessage,
           memberWithFather.rows[0],
         );
       } catch (error) {
@@ -1880,7 +2118,7 @@ function memberController(pool) {
       try {
         // Check target member exists and is not deleted
         const existingResult = await pool.query(
-          `SELECT id, "isDeleted", "mobileNumber"
+          `SELECT id, "isDeleted", "mobileNumber", "fatherId", "sonIds"
        FROM members
        WHERE id = $1
          AND COALESCE("isDeleted", false) = false
@@ -1918,19 +2156,12 @@ function memberController(pool) {
         }
 
         // sonIds
-        if (updateData.sonIds !== undefined) {
-          if (
-            updateData.sonIds === null ||
-            updateData.sonIds === "" ||
-            updateData.sonIds === "null" ||
-            (Array.isArray(updateData.sonIds) &&
-              updateData.sonIds.length === 0) ||
-            updateData.sonIds === "[]"
-          ) {
-            updateData.sonIds = null;
-          } else {
-            updateData.sonIds = parseRegistrationArray(updateData.sonIds);
-          }
+        const normalizedSonIds = normalizeSonIds(updateData);
+        if (normalizedSonIds.provided) {
+          updateData.sonIds = normalizedSonIds.value;
+          delete updateData["sonIds[]"];
+          delete updateData.sons;
+          delete updateData["sons[]"];
         }
 
         if (updateData.mobileNumber !== undefined) {
@@ -1984,6 +2215,26 @@ function memberController(pool) {
         }
 
         // -----------------------------
+        // Handle Approval-based Relationships
+        // -----------------------------
+        let pendingRequestsCreated = [];
+        if (
+          updateData.fatherId !== undefined ||
+          updateData.sonIds !== undefined
+        ) {
+          try {
+            pendingRequestsCreated = await handleRelationshipUpdate(
+              pool,
+              memberId,
+              existingResult.rows[0],
+              updateData,
+            );
+          } catch (relError) {
+            return response.status(400).json({ error: relError.message });
+          }
+        }
+
+        // -----------------------------
         // Allowed Editable Fields
         // -----------------------------
 
@@ -2012,7 +2263,10 @@ function memberController(pool) {
           (field) => updateData[field] !== undefined,
         );
 
-        if (fieldsToUpdate.length === 0) {
+        if (
+          fieldsToUpdate.length === 0 &&
+          pendingRequestsCreated.length === 0
+        ) {
           return response.status(400).json({
             error: "At least one valid member field is required to update",
           });
@@ -2022,19 +2276,20 @@ function memberController(pool) {
         // Build Dynamic UPDATE Query
         // -----------------------------
 
-        const values = fieldsToUpdate.map((field) => updateData[field]);
+        if (fieldsToUpdate.length > 0) {
+          const values = fieldsToUpdate.map((field) => updateData[field]);
+          const assignments = fieldsToUpdate.map(
+            (field, index) => `"${field}" = $${index + 1}`,
+          );
 
-        const assignments = fieldsToUpdate.map(
-          (field, index) => `"${field}" = $${index + 1}`,
-        );
-
-        await pool.query(
-          `UPDATE members
-       SET ${assignments.join(", ")},
-           "updated_at" = NOW()
-       WHERE id = $${fieldsToUpdate.length + 1}`,
-          [...values, memberId],
-        );
+          await pool.query(
+            `UPDATE members
+         SET ${assignments.join(", ")},
+             "updated_at" = NOW()
+         WHERE id = $${fieldsToUpdate.length + 1}`,
+            [...values, memberId],
+          );
+        }
 
         // -----------------------------
         // Get Updated Member
@@ -2042,35 +2297,52 @@ function memberController(pool) {
 
         const memberWithFather = await pool.query(
           `SELECT
-         m.*,
-         CONCAT(
-           f."firstName",
-           ' ',
-           f."middleName",
-           ' ',
-           f."surname"
-         ) AS "fatherName"
-       FROM members m
-       LEFT JOIN members f
-         ON m."fatherId" = f.id
-       WHERE m.id = $1`,
+          m.*,
+          CONCAT(
+            f."firstName",
+            ' ',
+            f."middleName",
+            ' ',
+            f."surname"
+          ) AS "fatherName"
+        FROM members m
+        LEFT JOIN members f
+          ON m."fatherId" = f.id
+        WHERE m.id = $1`,
           [memberId],
         );
 
         // -----------------------------
-        // Enrich Sons Names
+        // Enrich Sons Names & Pending Requests
         // -----------------------------
 
         await enrichMembersWithSonsNames(memberWithFather.rows, pool);
+
+        const pendingOutgoing = await pool.query(
+          `SELECT r.id, r.target_id, r.relationship_type, r.status, r.created_at,
+                  CONCAT(m."firstName", ' ', m."middleName", ' ', m."surname") AS "targetName",
+                  m."photo_url" AS "targetPhotoUrl"
+           FROM relationship_requests r
+           JOIN members m ON r.target_id = m.id
+           WHERE r.requester_id = $1 AND r.status = 'PENDING'
+           ORDER BY r.created_at DESC`,
+          [memberId],
+        );
+        memberWithFather.rows[0].pendingOutgoingRequests = pendingOutgoing.rows;
 
         // -----------------------------
         // Success Response
         // -----------------------------
 
+        const successMessage =
+          pendingRequestsCreated.length > 0
+            ? "Profile updated. Relationship requests have been sent for approval."
+            : "Member profile updated successfully";
+
         return sendSuccess(
           response,
           200,
-          "Member profile updated successfully",
+          successMessage,
           memberWithFather.rows[0],
         );
       } catch (error) {

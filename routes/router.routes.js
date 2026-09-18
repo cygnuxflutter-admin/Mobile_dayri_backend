@@ -4,6 +4,7 @@ const { createNotificationRoutes } = require("./notification.route");
 const { createEventRoutes } = require("./event.route");
 const { createReportRoutes } = require("./report.route");
 const { createEmergencyContactRoutes } = require("./emergencyContact.route");
+const { createRelationshipRoutes } = require("./relationship.route");
 const {
   ensureMembersTable,
 } = require("../controller/member.controller");
@@ -13,6 +14,9 @@ const {
 const {
   ensureEmergencyContactsTable,
 } = require("../controller/emergencyContact.controller");
+const {
+  ensureRelationshipRequestsTable,
+} = require("../controller/relationship.controller");
 
 function createApiRoutes(pool) {
   const router = Router();
@@ -22,6 +26,7 @@ function createApiRoutes(pool) {
 
   // Protected routes (require auth middleware)
   router.use("/member", createMemberRoutes(pool));
+  router.use("/relationship", createRelationshipRoutes(pool));
   router.use("/notification", createNotificationRoutes(pool));
   router.use("/event", createEventRoutes(pool));
   router.use("/report", createReportRoutes(pool));
@@ -41,4 +46,6 @@ module.exports = {
   ensureNotificationsTable,
   ensureEventsTable,
   ensureEmergencyContactsTable,
+  ensureRelationshipRequestsTable,
 };
+

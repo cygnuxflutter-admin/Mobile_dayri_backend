@@ -58,6 +58,11 @@ function createMemberRoutes(pool) {
   router.get("/getProfile", authMiddleware(pool), controller.getProfile);
   router.get("/getAllMembers", authMiddleware(pool), controller.getAllMembers);
   router.get(
+    "/getUpcomingBirthdays",
+    authMiddleware(pool),
+    controller.getUpcomingBirthdays,
+  );
+  router.get(
     "/getMemberStats",
     authMiddleware(pool),
     controller.getMemberStats,

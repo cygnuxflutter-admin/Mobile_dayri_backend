@@ -3,7 +3,7 @@ require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 const express = require('express');
 const { Pool } = require('pg');
-const { createApiRoutes, ensureMembersTable, ensureNotificationsTable, ensureEventsTable, ensureEmergencyContactsTable } = require('./routes/router.routes');
+const { createApiRoutes, ensureMembersTable, ensureNotificationsTable, ensureEventsTable, ensureEmergencyContactsTable, ensureRelationshipRequestsTable } = require('./routes/router.routes');
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -46,6 +46,7 @@ async function startServer() {
   await ensureNotificationsTable(pool);
   await ensureEventsTable(pool);
   await ensureEmergencyContactsTable(pool);
+  await ensureRelationshipRequestsTable(pool);
   app.listen(port, () => {
     console.log(`PostgreSQL API listening on port ${port}`);
   });
