@@ -56,9 +56,6 @@ const requiredMemberFields = [
   "gender",
   "dateOfBirth",
   "age",
-  "currentAddress",
-  "latlng",
-  "fcmToken",
 ];
 
 const insertMemberFields = [
@@ -481,12 +478,148 @@ async function handleRelationshipUpdate(
   return pendingRequestsCreated;
 }
 
+async function updateRelationshipsDirectly(
+  pool,
+  memberId,
+  existingMember,
+  updateData,
+) {
+  const existingFatherId = existingMember.fatherId
+    ? Number(existingMember.fatherId)
+    : null;
+  const existingSonIds = Array.isArray(existingMember.sonIds)
+    ? existingMember.sonIds.map(Number)
+    : [];
+
+  if (updateData.fatherId !== undefined) {
+    const fatherId =
+      updateData.fatherId === null ? null : Number(updateData.fatherId);
+
+    if (fatherId === memberId) {
+      throw new Error("fatherId cannot be the member itself");
+    }
+
+    if (fatherId !== null) {
+      const fatherResult = await pool.query(
+        `SELECT id FROM members
+         WHERE id = $1 AND COALESCE("isDeleted", false) = false
+         LIMIT 1`,
+        [fatherId],
+      );
+      if (fatherResult.rowCount === 0) {
+        throw new Error("fatherId does not reference an existing member");
+      }
+    }
+
+    if (existingFatherId && existingFatherId !== fatherId) {
+      await pool.query(
+        `UPDATE members
+         SET "sonIds" = array_remove(COALESCE("sonIds", ARRAY[]::bigint[]), $1::bigint),
+             "updated_at" = NOW()
+         WHERE id = $2`,
+        [memberId, existingFatherId],
+      );
+    }
+
+    if (fatherId && fatherId !== existingFatherId) {
+      await pool.query(
+        `UPDATE members
+         SET "sonIds" = array_append(
+               array_remove(COALESCE("sonIds", ARRAY[]::bigint[]), $1::bigint),
+               $1::bigint
+             ), "updated_at" = NOW()
+         WHERE id = $2`,
+        [memberId, fatherId],
+      );
+    }
+
+    updateData.fatherId = fatherId;
+  }
+
+  if (updateData.sonIds !== undefined) {
+    const sonIds = Array.isArray(updateData.sonIds)
+      ? [...new Set(updateData.sonIds.map(Number))]
+      : [];
+
+    if (
+      sonIds.some(
+        (sonId) => !Number.isInteger(sonId) || sonId < 1 || sonId === memberId,
+      )
+    ) {
+      throw new Error(
+        "sonIds must contain valid member IDs and cannot include the member itself",
+      );
+    }
+
+    if (sonIds.length > 0) {
+      const sonsResult = await pool.query(
+        `SELECT id FROM members
+         WHERE id = ANY($1::bigint[]) AND COALESCE("isDeleted", false) = false`,
+        [sonIds],
+      );
+      if (sonsResult.rowCount !== sonIds.length) {
+        throw new Error("sonIds contains a member that does not exist");
+      }
+    }
+
+    const removedSonIds = existingSonIds.filter(
+      (sonId) => !sonIds.includes(sonId),
+    );
+    if (removedSonIds.length > 0) {
+      await pool.query(
+        `UPDATE members
+         SET "fatherId" = NULL, "updated_at" = NOW()
+         WHERE id = ANY($1::bigint[]) AND "fatherId" = $2`,
+        [removedSonIds, memberId],
+      );
+    }
+
+    if (sonIds.length > 0) {
+      await pool.query(
+        `UPDATE members AS father
+         SET "sonIds" = ARRAY(
+               SELECT son_id
+               FROM unnest(COALESCE(father."sonIds", ARRAY[]::bigint[])) AS son_id
+               WHERE son_id <> ALL($1::bigint[])
+             ), "updated_at" = NOW()
+         WHERE father.id IN (
+           SELECT "fatherId"
+           FROM members
+           WHERE id = ANY($1::bigint[])
+             AND "fatherId" IS NOT NULL
+             AND "fatherId" <> $2
+         )`,
+        [sonIds, memberId],
+      );
+
+      await pool.query(
+        `UPDATE members
+         SET "fatherId" = $1, "updated_at" = NOW()
+         WHERE id = ANY($2::bigint[])`,
+        [memberId, sonIds],
+      );
+    }
+
+    updateData.sonIds = sonIds.length > 0 ? sonIds : null;
+  }
+}
+
 function memberController(pool) {
   return {
     async register(request, response) {
       const payload = buildRegistrationPayload(request.body, request.file);
-      const password = String(request.body?.password || "");
-      const confirmPassword = String(request.body?.confirmPassword || "");
+      const isAdminAddMember =
+        request.route?.path === "/addMember" &&
+        ["ADMIN", "SUPERADMIN"].includes(
+          String(request.member?.role || "").toUpperCase(),
+        );
+      const password = String(
+        request.body?.password || (isAdminAddMember ? "123456" : ""),
+      );
+      const confirmPassword = String(
+        request.body?.confirmPassword ||
+          (isAdminAddMember ? "123456" : ""),
+      );
 
       if (!password || !confirmPassword) {
         return response.status(400).json({
@@ -1476,9 +1609,7 @@ function memberController(pool) {
         });
       } catch (error) {
         console.error("Failed to fetch surnames:", error.message);
-        return response
-          .status(500)
-          .json({ error: "Failed to fetch surnames" });
+        return response.status(500).json({ error: "Failed to fetch surnames" });
       }
     },
 
@@ -1966,12 +2097,21 @@ function memberController(pool) {
           updateData.sonIds !== undefined
         ) {
           try {
-            pendingRequestsCreated = await handleRelationshipUpdate(
-              pool,
-              memberId,
-              existingResult.rows[0],
-              updateData,
-            );
+            if (isElevatedUser) {
+              await updateRelationshipsDirectly(
+                pool,
+                memberId,
+                existingResult.rows[0],
+                updateData,
+              );
+            } else {
+              pendingRequestsCreated = await handleRelationshipUpdate(
+                pool,
+                memberId,
+                existingResult.rows[0],
+                updateData,
+              );
+            }
           } catch (relError) {
             return response.status(400).json({ error: relError.message });
           }
@@ -2245,12 +2385,21 @@ function memberController(pool) {
           updateData.sonIds !== undefined
         ) {
           try {
-            pendingRequestsCreated = await handleRelationshipUpdate(
-              pool,
-              memberId,
-              existingResult.rows[0],
-              updateData,
-            );
+            if (isElevatedUser) {
+              await updateRelationshipsDirectly(
+                pool,
+                memberId,
+                existingResult.rows[0],
+                updateData,
+              );
+            } else {
+              pendingRequestsCreated = await handleRelationshipUpdate(
+                pool,
+                memberId,
+                existingResult.rows[0],
+                updateData,
+              );
+            }
           } catch (relError) {
             return response.status(400).json({ error: relError.message });
           }

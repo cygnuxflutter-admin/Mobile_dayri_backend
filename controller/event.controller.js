@@ -17,7 +17,7 @@ const storage = multer.diskStorage({
   },
 });
 
-const eventUpload = multer({ storage, limits: { fileSize: 5 * 1024 * 1024 } });
+const eventUpload = multer({ storage, limits: { fileSize: 50 * 1024 * 1024 } });
 
 const createEventsTable = `
   CREATE TABLE IF NOT EXISTS events (
@@ -26,6 +26,8 @@ const createEventsTable = `
     event_date TIMESTAMPTZ NOT NULL,
     image_url TEXT,
     image_urls JSONB,
+    video_url TEXT,
+    video_urls JSONB,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
   )
@@ -35,6 +37,12 @@ async function ensureEventsTable(pool) {
   await pool.query(createEventsTable);
   await pool.query(
     `ALTER TABLE events ADD COLUMN IF NOT EXISTS image_urls JSONB`,
+  );
+  await pool.query(
+    `ALTER TABLE events ADD COLUMN IF NOT EXISTS video_url TEXT`,
+  );
+  await pool.query(
+    `ALTER TABLE events ADD COLUMN IF NOT EXISTS video_urls JSONB`,
   );
 }
 
@@ -48,18 +56,73 @@ function normalizeFilesInput(files) {
   return [];
 }
 
+function isVideoFile(file) {
+  const extension = path.extname(file.originalname || file.filename || "").toLowerCase();
+  return (
+    file.mimetype?.startsWith("video/") ||
+    [".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp", ".m4v"].includes(
+      extension,
+    )
+  );
+}
+
 function buildEventPayload(body, files) {
   const fileList = normalizeFilesInput(files);
-  const imageUrls = fileList.length
-    ? fileList.map((f) => `/uploads/events/${f.filename}`)
-    : null;
+  const imageUrls = fileList
+    .filter(
+      (file) =>
+        !isVideoFile(file) &&
+        (file.mimetype?.startsWith("image/") || Boolean(file.filename)),
+    )
+    .map((file) => `/uploads/events/${file.filename}`);
+  const videoUrls = fileList
+    .filter(isVideoFile)
+    .map((file) => `/uploads/events/${file.filename}`);
 
   return {
     name: body.name?.trim() || null,
     eventDate: body.event_date || body.eventDate || null,
-    imageUrl: imageUrls ? imageUrls[0] : null,
-    imageUrls,
+    imageUrl: imageUrls[0] || null,
+    imageUrls: imageUrls.length > 0 ? imageUrls : null,
+    videoUrl: videoUrls[0] || null,
+    videoUrls: videoUrls.length > 0 ? videoUrls : null,
   };
+}
+
+function parseMediaUrls(value) {
+  if (value === undefined || value === null || value === "") return [];
+  if (Array.isArray(value)) return value.map(String).filter(Boolean);
+
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.map(String).filter(Boolean) : [];
+  } catch {
+    return String(value)
+      .split(",")
+      .map((url) => url.trim())
+      .filter(Boolean);
+  }
+}
+
+function storedMediaUrls(event, pluralField, singularField) {
+  const urls = Array.isArray(event[pluralField])
+    ? event[pluralField]
+    : event[singularField]
+      ? [event[singularField]]
+      : [];
+  return urls.map(String).filter(Boolean);
+}
+
+function removeEventFiles(urls) {
+  for (const url of urls) {
+    if (!url.startsWith("/uploads/events/")) continue;
+    const filePath = path.join(__dirname, "..", url.replace(/^\//, ""));
+    try {
+      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
+    } catch (error) {
+      console.error("Failed to remove event file:", error.message);
+    }
+  }
 }
 
 function validateEvent(payload) {
@@ -120,12 +183,16 @@ function eventController(pool) {
 
       try {
         const result = await pool.query(
-          `INSERT INTO events (name, event_date, image_url, image_urls) VALUES ($1, $2::timestamptz, $3, $4::jsonb) RETURNING *`,
+          `INSERT INTO events (name, event_date, image_url, image_urls, video_url, video_urls)
+           VALUES ($1, $2::timestamptz, $3, $4::jsonb, $5, $6::jsonb)
+           RETURNING *`,
           [
             payload.name,
             payload.eventDate,
             payload.imageUrl,
             payload.imageUrls ? JSON.stringify(payload.imageUrls) : null,
+            payload.videoUrl,
+            payload.videoUrls ? JSON.stringify(payload.videoUrls) : null,
           ],
         );
 
@@ -151,7 +218,7 @@ function eventController(pool) {
         const offset = (page - 1) * limit;
 
         const query = `
-          SELECT id, name, event_date, image_url, image_urls, created_at, updated_at,
+          SELECT id, name, event_date, image_url, image_urls, video_url, video_urls, created_at, updated_at,
                  COUNT(*) OVER() AS total_count
           FROM events
           ORDER BY event_date DESC
@@ -178,7 +245,13 @@ function eventController(pool) {
     },
 
     async deleteEvent(request, response) {
-      const eventId = request.params.id;
+      const eventId = Number.parseInt(request.params.id, 10);
+
+      if (!Number.isInteger(eventId) || eventId < 1) {
+        return response
+          .status(400)
+          .json({ error: "Event id must be a positive integer" });
+      }
 
       try {
         const result = await pool.query(
@@ -203,29 +276,108 @@ function eventController(pool) {
     },
 
     async updateEvent(request, response) {
-      const eventId = request.params.id;
-      const payload = buildEventPayload(request.body, request.files);
-      const validationError = validateEvent(payload);
+      const eventId = Number.parseInt(request.params.id, 10);
 
-      if (validationError) {
-        return response.status(400).json(validationError);
+      if (!Number.isInteger(eventId) || eventId < 1) {
+        return response
+          .status(400)
+          .json({ error: "Event id must be a positive integer" });
       }
 
       try {
+        const existingResult = await pool.query(
+          `SELECT * FROM events WHERE id = $1 LIMIT 1`,
+          [eventId],
+        );
+
+        if (existingResult.rowCount === 0) {
+          return response.status(404).json({ error: "Event not found" });
+        }
+
+        const existingEvent = existingResult.rows[0];
+        const uploadedPayload = buildEventPayload(
+          request.body,
+          request.files,
+        );
+        const imageUrls = storedMediaUrls(
+          existingEvent,
+          "image_urls",
+          "image_url",
+        );
+        const videoUrls = storedMediaUrls(
+          existingEvent,
+          "video_urls",
+          "video_url",
+        );
+        const deletedImageUrls = parseMediaUrls(
+          request.body.deleteImageUrls ??
+            request.body.removeImageUrls ??
+            request.body.deleteImages,
+        );
+        const deletedVideoUrls = parseMediaUrls(
+          request.body.deleteVideoUrls ??
+            request.body.removeVideoUrls ??
+            request.body.deleteVideos,
+        );
+        const nextImageUrls = [
+          ...imageUrls.filter((url) => !deletedImageUrls.includes(url)),
+          ...(uploadedPayload.imageUrls || []),
+        ];
+        const nextVideoUrls = [
+          ...videoUrls.filter((url) => !deletedVideoUrls.includes(url)),
+          ...(uploadedPayload.videoUrls || []),
+        ];
+        const payload = {
+          name:
+            request.body.name !== undefined
+              ? request.body.name?.trim() || null
+              : existingEvent.name,
+          eventDate:
+            request.body.event_date !== undefined ||
+            request.body.eventDate !== undefined
+              ? request.body.event_date || request.body.eventDate
+              : existingEvent.event_date,
+          imageUrl: nextImageUrls[0] || null,
+          imageUrls: nextImageUrls.length > 0 ? nextImageUrls : null,
+          videoUrl: nextVideoUrls[0] || null,
+          videoUrls: nextVideoUrls.length > 0 ? nextVideoUrls : null,
+        };
+        let validationError = null;
+        if (!payload.name) {
+          validationError = {
+            error: "Missing required field",
+            fields: ["name"],
+          };
+        } else if (
+          request.body.event_date !== undefined ||
+          request.body.eventDate !== undefined
+        ) {
+          validationError = validateEvent(payload);
+        }
+
+        if (validationError) {
+          return response.status(400).json(validationError);
+        }
+
         const result = await pool.query(
-          `UPDATE events SET name = $1, event_date = $2::timestamptz, image_url = $3, image_urls = $4::jsonb, updated_at = NOW() WHERE id = $5 RETURNING *`,
+          `UPDATE events
+           SET name = $1, event_date = $2::timestamptz, image_url = $3,
+               image_urls = $4::jsonb, video_url = $5, video_urls = $6::jsonb,
+               updated_at = NOW()
+           WHERE id = $7
+           RETURNING *`,
           [
             payload.name,
             payload.eventDate,
             payload.imageUrl,
             payload.imageUrls ? JSON.stringify(payload.imageUrls) : null,
+            payload.videoUrl,
+            payload.videoUrls ? JSON.stringify(payload.videoUrls) : null,
             eventId,
           ],
         );
 
-        if (result.rowCount === 0) {
-          return response.status(404).json({ error: "Event not found" });
-        }
+        removeEventFiles([...deletedImageUrls, ...deletedVideoUrls]);
 
         return sendSuccess(
           response,

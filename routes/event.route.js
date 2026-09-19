@@ -11,6 +11,7 @@ function createEventRoutes(pool) {
   router.get('/getEvents', authMiddleware(pool), controller.getEvents);
   router.put('/updateEvent/:id', authMiddleware(pool), authorizeRoles('SUPERADMIN', 'ADMIN'), controller.eventUpload.any(), controller.updateEvent);
   router.delete('/deleteEvent/:id', authMiddleware(pool), authorizeRoles('SUPERADMIN', 'ADMIN'), controller.deleteEvent);
+  router.post('/deleteEvent/:id', authMiddleware(pool), authorizeRoles('SUPERADMIN', 'ADMIN'), controller.deleteEvent);
 
   return router;
 }

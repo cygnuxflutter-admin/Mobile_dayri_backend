@@ -23,6 +23,13 @@ function createMemberRoutes(pool) {
     memberRegistrationUpload.single("photo"),
     controller.register,
   );
+  router.post(
+    "/addMember",
+    authMiddleware(pool),
+    bothAdminMiddleware(),
+    memberRegistrationUpload.single("photo"),
+    controller.register,
+  );
 
   // Login routes
   router.post("/login", authCtrl.login);
