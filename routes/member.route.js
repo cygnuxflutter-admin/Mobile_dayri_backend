@@ -67,6 +67,11 @@ function createMemberRoutes(pool) {
     authMiddleware(pool),
     controller.getMemberStats,
   );
+  router.get(
+    "/getSurnames",
+    authMiddleware(pool),
+    controller.getSurnames,
+  );
                                             
   router.post(
     "/updateMember/:id",

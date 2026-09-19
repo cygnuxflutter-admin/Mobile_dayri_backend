@@ -1459,6 +1459,28 @@ function memberController(pool) {
           .json({ error: "Failed to fetch member statistics" });
       }
     },
+    async getSurnames(request, response) {
+      try {
+        const result = await pool.query(`
+          SELECT
+            TRIM(surname) AS surname,
+            COUNT(*)::INTEGER AS "memberCount"
+          FROM members
+          WHERE NULLIF(TRIM(surname), '') IS NOT NULL
+          GROUP BY TRIM(surname)
+          ORDER BY LOWER(TRIM(surname)), TRIM(surname)
+        `);
+
+        return sendSuccess(response, 200, "Surnames fetched successfully", {
+          surnameWiseCounts: result.rows,
+        });
+      } catch (error) {
+        console.error("Failed to fetch surnames:", error.message);
+        return response
+          .status(500)
+          .json({ error: "Failed to fetch surnames" });
+      }
+    },
 
     async getAllMembersBySurname(request, response) {
       const surname = request.query.surname?.trim();
