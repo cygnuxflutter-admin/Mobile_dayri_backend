@@ -48,7 +48,10 @@ function memberResponse(member) {
 function authController(pool) {
   return {
     async login(request, response) {
-      const { mobileNumber, password, fcmToken } = request.body;
+      const body = request.body || {};
+      const mobileNumber = body.mobileNumber;
+      const password = body.password;
+      const fcmToken = body.fcmToken ?? body.fcm_token;
 
       if (!mobileNumber || !password) {
         return response.status(400).json({
@@ -99,6 +102,13 @@ function authController(pool) {
              RETURNING *`,
             [fcmToken.trim(), member.id],
           );
+
+          if (updatedMemberResult.rowCount === 0) {
+            return response.status(500).json({
+              error: "Unable to update FCM token",
+            });
+          }
+
           member.fcmToken = updatedMemberResult.rows[0].fcmToken;
           member.updated_at = updatedMemberResult.rows[0].updated_at;
         }
