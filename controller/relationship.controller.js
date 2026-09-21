@@ -244,6 +244,14 @@ function relationshipController(pool) {
       const userId = Number(caller.id);
 
       try {
+        const statusFilter = request.query.status;
+        let statusCondition = "";
+        const queryParams = [userId];
+        if (statusFilter && statusFilter.toUpperCase() !== "ALL") {
+          queryParams.push(statusFilter.toUpperCase());
+          statusCondition = ` AND r.status = $${queryParams.length}`;
+        }
+
         const query = `
           SELECT 
             r.id,
@@ -267,12 +275,12 @@ function relationshipController(pool) {
           FROM relationship_requests r
           JOIN members m ON r.target_id = m.id
           WHERE r.requester_id = $1 
-            AND r.status = 'PENDING'
+            ${statusCondition}
             AND COALESCE(m."isDeleted", false) = false
           ORDER BY r.created_at DESC
         `;
 
-        const result = await pool.query(query, [userId]);
+        const result = await pool.query(query, queryParams);
         return sendSuccess(response, 200, "Outgoing requests fetched successfully", result.rows);
       } catch (error) {
         console.error("Failed to fetch outgoing requests:", error.message);
