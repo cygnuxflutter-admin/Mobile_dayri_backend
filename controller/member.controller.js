@@ -711,6 +711,7 @@ function memberController(pool) {
       const oldPassword = String(request.body?.oldPassword || "");
       const newPassword = String(request.body?.newPassword || "");
       const confirmPassword = String(request.body?.confirmPassword || "");
+      const dateOfBirth = request.body?.dateOfBirth;
 
       if (!oldPassword || !newPassword || !confirmPassword) {
         return response.status(400).json({
@@ -747,12 +748,17 @@ function memberController(pool) {
         }
 
         const passwordHash = await bcrypt.hash(newPassword, 12);
+        const updateValues = [passwordHash, request.member.id];
+        const dateOfBirthUpdate =
+          dateOfBirth !== undefined && dateOfBirth !== null && dateOfBirth !== ""
+            ? `, "dateOfBirth" = $${updateValues.push(String(dateOfBirth))}`
+            : "";
         const updatedMemberResult = await pool.query(
           `UPDATE members
-           SET "passwordHash" = $1, "updated_at" = NOW(), "isPasswordChange" = true
+           SET "passwordHash" = $1, "updated_at" = NOW(), "isPasswordChange" = true${dateOfBirthUpdate}
            WHERE id = $2
            RETURNING *`,
-          [passwordHash, request.member.id],
+          updateValues,
         );
 
         const updatedMember = updatedMemberResult.rows[0];
