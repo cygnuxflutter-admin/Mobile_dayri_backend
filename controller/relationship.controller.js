@@ -122,12 +122,12 @@ async function processRelationshipRequest(pool, requesterId, targetId, relations
   }
 
   // Send Push Notification via FCM
-  const relLabel = relationshipType === "FATHER" ? "Father" : "Son";
+  const relLabel = relationshipType === "SON" ? "Father" : "Son";
   const notifTitle = "New Relationship Request";
-  const notifBody = `${requesterName} wants to add you as their ${relLabel}. Do you approve?`;
+  const notifBody = `${requesterName} wants to become your ${relLabel}. Please approve it from your dashboard.`;
 
-  if (targetMember.fcmToken) {
-    sendPushNotification(targetMember.fcmToken, {
+  if (typeof targetMember.fcmToken === "string" && targetMember.fcmToken.trim()) {
+    await sendPushNotification(targetMember.fcmToken, {
       title: notifTitle,
       body: notifBody,
       data: {
@@ -137,9 +137,9 @@ async function processRelationshipRequest(pool, requesterId, targetId, relations
         relationshipType,
         requesterName,
       },
-    }).catch((err) => {
-      console.error("FCM dispatch error:", err.message);
     });
+  } else {
+    console.warn(`No FCM token found for relationship target ${targetId}`);
   }
 
   return requestRecord;

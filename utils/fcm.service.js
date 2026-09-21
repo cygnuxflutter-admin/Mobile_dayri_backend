@@ -1,4 +1,5 @@
-const admin = require("firebase-admin");
+const { cert, initializeApp } = require("firebase-admin/app");
+const { getMessaging } = require("firebase-admin/messaging");
 const path = require("path");
 const fs = require("fs");
 
@@ -9,10 +10,10 @@ try {
   const serviceAccountPath = path.join(__dirname, "..", "service-account.json");
   if (fs.existsSync(serviceAccountPath)) {
     const serviceAccount = JSON.parse(fs.readFileSync(serviceAccountPath, "utf8"));
-    firebaseApp = admin.initializeApp({
-      credential: admin.credential.cert(serviceAccount),
+    firebaseApp = initializeApp({
+      credential: cert(serviceAccount),
     });
-    messaging = admin.messaging(firebaseApp);
+    messaging = getMessaging(firebaseApp);
     console.log("Firebase Admin initialized successfully.");
   } else {
     console.warn("service-account.json not found at:", serviceAccountPath);

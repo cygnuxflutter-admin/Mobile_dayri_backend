@@ -103,14 +103,18 @@ function normalizeMobileNumber(value) {
 function parseRegistrationArray(value) {
   if (value === undefined || value === null || value === "") return [];
   if (Array.isArray(value)) return value.map(Number);
+  if (typeof value === "number") return [value];
 
   try {
     const parsed = JSON.parse(value);
-    return Array.isArray(parsed) ? parsed.map(Number) : [];
+    if (Array.isArray(parsed)) return parsed.map(Number);
+    if (Number.isInteger(Number(parsed))) return [Number(parsed)];
+    return [];
   } catch {
-    return String(value)
+    const values = String(value)
       .split(",")
       .map((item) => Number(item.trim()));
+    return values.every(Number.isFinite) ? values : [];
   }
 }
 
@@ -1426,7 +1430,7 @@ function memberController(pool) {
           CROSS JOIN LATERAL (
             SELECT day
             FROM generate_series(
-              CURRENT_DATE,
+              CURRENT_DATE - INTERVAL '1 day',
               CURRENT_DATE + INTERVAL '7 days',
               INTERVAL '1 day'
             ) AS day
@@ -2005,8 +2009,14 @@ function memberController(pool) {
 
         const updateData = { ...request.body };
 
-        delete updateData.facmToken;
-        delete updateData.fcmToken;
+        if (updateData.fcmToken === undefined && updateData.fcm_token !== undefined) {
+          updateData.fcmToken = updateData.fcm_token;
+          delete updateData.fcm_token;
+        }
+
+        if (typeof updateData.fcmToken === "string") {
+          updateData.fcmToken = updateData.fcmToken.trim();
+        }
 
         // -----------------------------
         // Parse / Normalize Fields
@@ -2097,7 +2107,7 @@ function memberController(pool) {
           updateData.sonIds !== undefined
         ) {
           try {
-            if (isElevatedUser) {
+            if (isElevatedUser && callerId !== memberId) {
               await updateRelationshipsDirectly(
                 pool,
                 memberId,
@@ -2140,6 +2150,7 @@ function memberController(pool) {
           "sonIds",
           "fatherId",
           "photo_url",
+          "fcmToken",
         ];
 
         const fieldsToUpdate = allowedFields.filter(
@@ -2296,6 +2307,11 @@ function memberController(pool) {
 
         const updateData = { ...request.body };
 
+        if (updateData.fcmToken === undefined && updateData.fcm_token !== undefined) {
+          updateData.fcmToken = updateData.fcm_token;
+          delete updateData.fcm_token;
+        }
+
         // -----------------------------
         // Parse / Normalize Fields
         // -----------------------------
@@ -2385,7 +2401,7 @@ function memberController(pool) {
           updateData.sonIds !== undefined
         ) {
           try {
-            if (isElevatedUser) {
+            if (isElevatedUser && callerId !== memberId) {
               await updateRelationshipsDirectly(
                 pool,
                 memberId,
@@ -2428,6 +2444,7 @@ function memberController(pool) {
           "sonIds",
           "fatherId",
           "photo_url",
+          "fcmToken",
         ];
 
         const fieldsToUpdate = allowedFields.filter(
