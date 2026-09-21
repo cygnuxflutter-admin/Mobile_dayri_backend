@@ -33,6 +33,7 @@ function createMemberRoutes(pool) {
 
   // Login routes
   router.post("/login", authCtrl.login);
+  router.post("/logout", authMiddleware(pool), authCtrl.logout);
   router.post("/sample/hashPassword", authCtrl.hashPassword);
   router.post(
     "/changePassword",

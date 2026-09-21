@@ -48,7 +48,7 @@ function memberResponse(member) {
 function authController(pool) {
   return {
     async login(request, response) {
-      const { mobileNumber, password } = request.body;
+      const { mobileNumber, password, fcmToken } = request.body;
 
       if (!mobileNumber || !password) {
         return response.status(400).json({
@@ -91,6 +91,18 @@ function authController(pool) {
             .json({ error: "Member approval is required" });
         }
 
+        if (typeof fcmToken === "string" && fcmToken.trim()) {
+          const updatedMemberResult = await pool.query(
+            `UPDATE members
+             SET "fcmToken" = $1, "updated_at" = NOW()
+             WHERE id = $2
+             RETURNING *`,
+            [fcmToken.trim(), member.id],
+          );
+          member.fcmToken = updatedMemberResult.rows[0].fcmToken;
+          member.updated_at = updatedMemberResult.rows[0].updated_at;
+        }
+
         console.log("Member logged in successfully:", member.created_at);
 
         return sendSuccess(response, 200, "Login successfully", {
@@ -100,6 +112,22 @@ function authController(pool) {
       } catch (error) {
         console.error("Failed to login member:", error.message);
         return response.status(500).json({ error: "Failed to login" });
+      }
+    },
+
+    async logout(request, response) {
+      try {
+        await pool.query(
+          `UPDATE members
+           SET "fcmToken" = NULL, "updated_at" = NOW()
+           WHERE id = $1`,
+          [request.member.id],
+        );
+
+        return sendSuccess(response, 200, "Logout successfully");
+      } catch (error) {
+        console.error("Failed to logout member:", error.message);
+        return response.status(500).json({ error: "Failed to logout" });
       }
     },
 
