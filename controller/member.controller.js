@@ -1873,6 +1873,43 @@ function memberController(pool) {
       }
     },
 
+    async deleteAccount(request, response) {
+      const memberId = Number(request.member?.id);
+
+      if (!Number.isInteger(memberId) || memberId <= 0) {
+        return response.status(401).json({ error: "Unauthorized" });
+      }
+
+      try {
+        const result = await pool.query(
+          `UPDATE members
+           SET "isDeleted" = TRUE,
+               "deletedBy" = $1,
+               "isActive" = FALSE,
+               "fcmToken" = NULL,
+               "updated_at" = NOW()
+           WHERE id = $1
+             AND COALESCE("isDeleted", false) = false
+           RETURNING id, "isDeleted", "isActive", "deletedBy", "updated_at"`,
+          [memberId],
+        );
+
+        if (result.rowCount === 0) {
+          return response.status(404).json({ error: "Member not found" });
+        }
+
+        return sendSuccess(response, 200, "Account deleted successfully", {
+          id: result.rows[0].id,
+          isDeleted: result.rows[0].isDeleted,
+          isActive: result.rows[0].isActive,
+          deletedBy: result.rows[0].deletedBy,
+        });
+      } catch (error) {
+        console.error("Failed to delete account:", error.message);
+        return response.status(500).json({ error: "Failed to delete account" });
+      }
+    },
+
     async getMemberById(request, response) {
       const memberId = parseMemberId(request, response);
 

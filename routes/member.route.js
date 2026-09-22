@@ -112,6 +112,11 @@ function createMemberRoutes(pool) {
     bothAdminMiddleware(),
     controller.deleteMember,
   );
+  router.post(
+    "/deleteAccount",
+    authMiddleware(pool),
+    controller.deleteAccount,
+  );
 
   return router;
 }
