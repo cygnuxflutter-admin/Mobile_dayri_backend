@@ -75,6 +75,12 @@ function authController(pool) {
 
         const member = result.rows[0];
 
+        if (!(await bcrypt.compare(String(password), member.passwordHash))) {
+          return response
+            .status(401)
+            .json({ error: "Invalid login credentials" });
+        }
+
         if (member.isDeleted === true) {
           return response.status(403).json({
             error: "Account is deleted",
@@ -99,11 +105,7 @@ function authController(pool) {
           });
         }
 
-        if (!(await bcrypt.compare(String(password), member.passwordHash))) {
-          return response
-            .status(401)
-            .json({ error: "Invalid login credentials" });
-        }
+        
 
         if (typeof fcmToken === "string" && fcmToken.trim()) {
           const updatedMemberResult = await pool.query(
