@@ -63,8 +63,6 @@ function authController(pool) {
         const result = await pool.query(
           `SELECT * FROM members
            WHERE "mobileNumber" = $1
-             AND COALESCE("isDeleted", false) = false
-             AND COALESCE("isActive", true) = true
            LIMIT 1`,
           [String(mobileNumber).replace(/[\s()-]/g, "")],
         );
@@ -76,6 +74,25 @@ function authController(pool) {
         }
 
         const member = result.rows[0];
+
+        if (member.isDeleted === true) {
+          return response.status(403).json({
+            error: "Account is deleted",
+          });
+        }
+
+        if (member.isActive === false) {
+          return response.status(403).json({
+            error: "Account is inactive",
+          });
+        }
+
+        if (member.isApproved === false) {
+          return response.status(403).json({
+            error: "Account approval is required",
+          });
+        }
+
         if (!member.passwordHash) {
           return response.status(401).json({
             error: "Password login is not configured for this member",
@@ -86,12 +103,6 @@ function authController(pool) {
           return response
             .status(401)
             .json({ error: "Invalid login credentials" });
-        }
-
-        if (member.isApproved === false) {
-          return response
-            .status(403)
-            .json({ error: "Member approval is required" });
         }
 
         if (typeof fcmToken === "string" && fcmToken.trim()) {
