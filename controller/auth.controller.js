@@ -70,7 +70,7 @@ function authController(pool) {
         if (result.rowCount === 0) {
           return response
             .status(401)
-            .json({ error: "Invalid login credentials" });
+            .json({ error: "No user Found!" });
         }
 
         const member = result.rows[0];
@@ -78,7 +78,7 @@ function authController(pool) {
         if (!(await bcrypt.compare(String(password), member.passwordHash))) {
           return response
             .status(401)
-            .json({ error: "Invalid login credentials" });
+            .json({ error: "Invalid login credentials!" });
         }
 
         if (member.isDeleted === true) {
