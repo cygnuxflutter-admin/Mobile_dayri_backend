@@ -104,6 +104,17 @@ function parseMediaUrls(value) {
   }
 }
 
+function normalizeMediaUrl(value) {
+  const rawUrl = String(value || "").trim();
+  if (!rawUrl) return "";
+
+  try {
+    return new URL(rawUrl, "http://localhost").pathname;
+  } catch {
+    return rawUrl.split("?")[0];
+  }
+}
+
 function storedMediaUrls(event, pluralField, singularField) {
   const urls = Array.isArray(event[pluralField])
     ? event[pluralField]
@@ -115,8 +126,13 @@ function storedMediaUrls(event, pluralField, singularField) {
 
 function removeEventFiles(urls) {
   for (const url of urls) {
-    if (!url.startsWith("/uploads/events/")) continue;
-    const filePath = path.join(__dirname, "..", url.replace(/^\//, ""));
+    const normalizedUrl = normalizeMediaUrl(url);
+    if (!normalizedUrl.startsWith("/uploads/events/")) continue;
+    const filePath = path.join(
+      __dirname,
+      "..",
+      normalizedUrl.replace(/^\//, ""),
+    );
     try {
       if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
     } catch (error) {
@@ -319,12 +335,22 @@ function eventController(pool) {
             request.body.removeVideoUrls ??
             request.body.deleteVideos,
         );
+        const deletedImageUrlSet = new Set(
+          deletedImageUrls.map(normalizeMediaUrl),
+        );
+        const deletedVideoUrlSet = new Set(
+          deletedVideoUrls.map(normalizeMediaUrl),
+        );
         const nextImageUrls = [
-          ...imageUrls.filter((url) => !deletedImageUrls.includes(url)),
+          ...imageUrls.filter(
+            (url) => !deletedImageUrlSet.has(normalizeMediaUrl(url)),
+          ),
           ...(uploadedPayload.imageUrls || []),
         ];
         const nextVideoUrls = [
-          ...videoUrls.filter((url) => !deletedVideoUrls.includes(url)),
+          ...videoUrls.filter(
+            (url) => !deletedVideoUrlSet.has(normalizeMediaUrl(url)),
+          ),
           ...(uploadedPayload.videoUrls || []),
         ];
         const payload = {
