@@ -151,22 +151,26 @@ function withComputedAge(member) {
 }
 
 function buildRegistrationPayload(body, file) {
-  const sonIds = parseRegistrationArray(body?.sonIds);
+  const sanitizedBody = { ...(body || {}) };
+  delete sanitizedBody.fcmToken;
+  delete sanitizedBody.fcm_token;
+
+  const sonIds = parseRegistrationArray(sanitizedBody?.sonIds);
 
   return {
-    ...body,
+    ...sanitizedBody,
     age:
-      body?.age === undefined || body.age === "" || body.age === null
+      sanitizedBody?.age === undefined || sanitizedBody.age === "" || sanitizedBody.age === null
         ? null
-        : Number(body.age),
+        : Number(sanitizedBody.age),
     fatherId:
-      body?.fatherId === undefined ||
-      body.fatherId === "" ||
-      body.fatherId === null
+      sanitizedBody?.fatherId === undefined ||
+      sanitizedBody.fatherId === "" ||
+      sanitizedBody.fatherId === null
         ? null
-        : Number(body.fatherId),
+        : Number(sanitizedBody.fatherId),
     sonIds: sonIds.length > 0 ? sonIds : null,
-    mobileNumber: normalizeMobileNumber(body?.mobileNumber),
+    mobileNumber: normalizeMobileNumber(sanitizedBody?.mobileNumber),
     photoUrl: file ? `/uploads/members/${file.filename}` : null,
   };
 }
@@ -675,8 +679,8 @@ function memberController(pool) {
               "firstName", "firstNameEnglish", "middleName", "middleNameEnglish",
               surname, "surnameEnglish", "mobileNumber", "passwordHash", gender,
               "dateOfBirth", "currentAddress", "latlng", "sonIds", "fatherId",
-              "photo_url", "created_at", "fcmToken"
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $12, $13, $14, $15, $16, NOW(), $17)
+              "photo_url", "created_at"
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW())
             RETURNING *`,
           [
             payload.firstName,
@@ -694,7 +698,6 @@ function memberController(pool) {
             payload.sonIds,
             payload.fatherId,
             payload.photoUrl,
-            payload.fcmToken,
           ],
         );
         await client.query("COMMIT");
