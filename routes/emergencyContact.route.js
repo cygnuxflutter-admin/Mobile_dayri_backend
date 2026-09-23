@@ -11,8 +11,8 @@ function createEmergencyContactRoutes(pool) {
   router.post("/addEmergencyContact", authMiddleware(pool), authorizeRoles("SUPERADMIN", "ADMIN"), controller.addEmergencyContact);
   router.get("/getEmergencyContacts", authMiddleware(pool), controller.getEmergencyContacts);
   router.get("/getEmergencyContact/:id", authMiddleware(pool), controller.getEmergencyContact);
-  router.put("/updateEmergencyContact/:id", authMiddleware(pool), authorizeRoles("SUPERADMIN", "ADMIN"), controller.updateEmergencyContact);
-  router.delete("/deleteEmergencyContact/:id", authMiddleware(pool), authorizeRoles("SUPERADMIN"), controller.deleteEmergencyContact);
+  router.post("/updateEmergencyContact/:id", authMiddleware(pool), authorizeRoles("SUPERADMIN", "ADMIN"), controller.updateEmergencyContact);
+  router.post("/deleteEmergencyContact/:id", authMiddleware(pool), authorizeRoles("SUPERADMIN"), controller.deleteEmergencyContact);
 
   return router;
 }
