@@ -78,7 +78,6 @@ const createMembersTable = `
     "mobileNumber" TEXT NOT NULL,
     gender TEXT NOT NULL,
     "dateOfBirth" TEXT NOT NULL,
-    age INTEGER CHECK (age >= 0),
     "isActive" BOOLEAN DEFAULT TRUE,
     "isDeleted" BOOLEAN DEFAULT FALSE,
     "deletedBy" BIGINT REFERENCES members(id) ON DELETE SET NULL,
@@ -160,7 +159,9 @@ function buildRegistrationPayload(body, file) {
   return {
     ...sanitizedBody,
     age:
-      sanitizedBody?.age === undefined || sanitizedBody.age === "" || sanitizedBody.age === null
+      sanitizedBody?.age === undefined ||
+      sanitizedBody.age === "" ||
+      sanitizedBody.age === null
         ? null
         : Number(sanitizedBody.age),
     fatherId:
@@ -639,9 +640,16 @@ function memberController(pool) {
         request.body?.password || (isAdminAddMember ? "123456" : ""),
       );
       const confirmPassword = String(
-        request.body?.confirmPassword ||
-          (isAdminAddMember ? "123456" : ""),
+        request.body?.confirmPassword || (isAdminAddMember ? "123456" : ""),
       );
+      const rawPasswordChange =
+        request.body?.isPasswordChange ?? request.body?.isPasswordChanges;
+      const shouldSetPasswordChange = isAdminAddMember
+        ? false
+        : rawPasswordChange === undefined
+          ? true
+          : rawPasswordChange === true ||
+            String(rawPasswordChange).toLowerCase() === "true";
 
       if (!password || !confirmPassword) {
         return response.status(400).json({
@@ -679,8 +687,8 @@ function memberController(pool) {
               "firstName", "firstNameEnglish", "middleName", "middleNameEnglish",
               surname, "surnameEnglish", "mobileNumber", "passwordHash", gender,
               "dateOfBirth", "currentAddress", "latlng", "sonIds", "fatherId",
-              "photo_url", "created_at"
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW())
+              "photo_url", "created_at", "isPasswordChange"
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW(), $16)
             RETURNING *`,
           [
             payload.firstName,
@@ -698,6 +706,7 @@ function memberController(pool) {
             payload.sonIds,
             payload.fatherId,
             payload.photoUrl,
+            shouldSetPasswordChange,
           ],
         );
         await client.query("COMMIT");
@@ -766,7 +775,9 @@ function memberController(pool) {
         const passwordHash = await bcrypt.hash(newPassword, 12);
         const updateValues = [passwordHash, request.member.id];
         const dateOfBirthUpdate =
-          dateOfBirth !== undefined && dateOfBirth !== null && dateOfBirth !== ""
+          dateOfBirth !== undefined &&
+          dateOfBirth !== null &&
+          dateOfBirth !== ""
             ? `, "dateOfBirth" = $${updateValues.push(String(dateOfBirth))}`
             : "";
         const updatedMemberResult = await pool.query(
@@ -2086,7 +2097,10 @@ function memberController(pool) {
 
         const updateData = { ...request.body };
 
-        if (updateData.fcmToken === undefined && updateData.fcm_token !== undefined) {
+        if (
+          updateData.fcmToken === undefined &&
+          updateData.fcm_token !== undefined
+        ) {
           updateData.fcmToken = updateData.fcm_token;
           delete updateData.fcm_token;
         }
@@ -2307,12 +2321,7 @@ function memberController(pool) {
 
         const updatedMember = withComputedAge(memberWithFather.rows[0]);
 
-        return sendSuccess(
-          response,
-          200,
-          successMessage,
-          updatedMember,
-        );
+        return sendSuccess(response, 200, successMessage, updatedMember);
       } catch (error) {
         // Foreign key error
         if (error.code === "23503") {
@@ -2381,7 +2390,10 @@ function memberController(pool) {
 
         const updateData = { ...request.body };
 
-        if (updateData.fcmToken === undefined && updateData.fcm_token !== undefined) {
+        if (
+          updateData.fcmToken === undefined &&
+          updateData.fcm_token !== undefined
+        ) {
           updateData.fcmToken = updateData.fcm_token;
           delete updateData.fcm_token;
         }
@@ -2598,12 +2610,7 @@ function memberController(pool) {
 
         const updatedMember = withComputedAge(memberWithFather.rows[0]);
 
-        return sendSuccess(
-          response,
-          200,
-          successMessage,
-          updatedMember,
-        );
+        return sendSuccess(response, 200, successMessage, updatedMember);
       } catch (error) {
         // Foreign key error
         if (error.code === "23503") {
