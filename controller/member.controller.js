@@ -1464,11 +1464,16 @@ function memberController(pool) {
           ORDER BY upcoming.day, p."firstName", p.surname
         `);
 
+        const birthdayRows = result.rows.map((member) => ({
+          ...member,
+          age: calculateAgeFromDob(member.dateOfBirth ?? member.DateOfBirth),
+        }));
+
         return sendSuccess(
           response,
           200,
           "Upcoming birthdays fetched successfully",
-          result.rows,
+          birthdayRows,
         );
       } catch (error) {
         console.error("Failed to fetch upcoming birthdays:", error.message);
@@ -1523,7 +1528,7 @@ function memberController(pool) {
           });
         }
 
-        const member = result.rows[0];
+        const member = withComputedAge(result.rows[0]);
 
         // Get sons names
         await enrichMembersWithSonsNames([member], pool);
@@ -2012,7 +2017,7 @@ function memberController(pool) {
           });
         }
 
-        const member = result.rows[0];
+        const member = withComputedAge(result.rows[0]);
 
         // Get sons names
         await enrichMembersWithSonsNames([member], pool);
