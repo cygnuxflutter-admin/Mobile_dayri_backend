@@ -213,7 +213,14 @@ function relationshipController(pool) {
             m."photo_url" AS "requesterPhotoUrl",
             m."mobileNumber" AS "requesterMobileNumber",
             m.gender AS "requesterGender",
-            m.age AS "requesterAge",
+            CASE
+              WHEN m."dateOfBirth" IS NULL OR TRIM(m."dateOfBirth") = '' THEN NULL
+              WHEN TRIM(m."dateOfBirth") ~ '^[0-9]{2}-[0-9]{2}-[0-9]{4}$'
+                THEN DATE_PART('year', AGE(CURRENT_DATE, TO_DATE(TRIM(m."dateOfBirth"), 'DD-MM-YYYY')))
+              WHEN TRIM(m."dateOfBirth") ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+                THEN DATE_PART('year', AGE(CURRENT_DATE, TO_DATE(TRIM(m."dateOfBirth"), 'YYYY-MM-DD')))
+              ELSE NULL
+            END AS "requesterAge",
             CONCAT(m."firstName", ' ', m."middleName", ' ', m."surname") AS "requesterFullName"
           FROM relationship_requests r
           JOIN members m ON r.requester_id = m.id
@@ -270,7 +277,14 @@ function relationshipController(pool) {
             m."photo_url" AS "targetPhotoUrl",
             m."mobileNumber" AS "targetMobileNumber",
             m.gender AS "targetGender",
-            m.age AS "targetAge",
+            CASE
+              WHEN m."dateOfBirth" IS NULL OR TRIM(m."dateOfBirth") = '' THEN NULL
+              WHEN TRIM(m."dateOfBirth") ~ '^[0-9]{2}-[0-9]{2}-[0-9]{4}$'
+                THEN DATE_PART('year', AGE(CURRENT_DATE, TO_DATE(TRIM(m."dateOfBirth"), 'DD-MM-YYYY')))
+              WHEN TRIM(m."dateOfBirth") ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+                THEN DATE_PART('year', AGE(CURRENT_DATE, TO_DATE(TRIM(m."dateOfBirth"), 'YYYY-MM-DD')))
+              ELSE NULL
+            END AS "targetAge",
             CONCAT(m."firstName", ' ', m."middleName", ' ', m."surname") AS "targetFullName"
           FROM relationship_requests r
           JOIN members m ON r.target_id = m.id

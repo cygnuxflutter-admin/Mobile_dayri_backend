@@ -25,6 +25,40 @@ function verifyToken(token) {
 }
 
 
+function calculateAgeFromDob(dateOfBirth) {
+  if (!dateOfBirth) return null;
+
+  const value = String(dateOfBirth).trim();
+  if (!value) return null;
+
+  let dobDate;
+  const isoMatch = value.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  const dmyMatch = value.match(/^(\d{2})-(\d{2})-(\d{4})$/);
+
+  if (isoMatch) {
+    dobDate = new Date(`${isoMatch[1]}-${isoMatch[2]}-${isoMatch[3]}T00:00:00`);
+  } else if (dmyMatch) {
+    dobDate = new Date(`${dmyMatch[3]}-${dmyMatch[2]}-${dmyMatch[1]}T00:00:00`);
+  } else {
+    dobDate = new Date(value);
+  }
+
+  if (Number.isNaN(dobDate.getTime())) return null;
+
+  const today = new Date();
+  let age = today.getFullYear() - dobDate.getFullYear();
+  const monthDiff = today.getMonth() - dobDate.getMonth();
+
+  if (
+    monthDiff < 0 ||
+    (monthDiff === 0 && today.getDate() < dobDate.getDate())
+  ) {
+    age -= 1;
+  }
+
+  return age >= 0 ? age : null;
+}
+
 function memberResponse(member) {
   return {
     id: member.id,
@@ -34,6 +68,7 @@ function memberResponse(member) {
     surnameEnglish: member.surnameEnglish,
     mobileNumber: member.mobileNumber,
     role: member.role,
+    age: calculateAgeFromDob(member.dateOfBirth),
     DateOfBirth: member.dateOfBirth,
     gender: member.gender,
     isActive: member.isActive,
@@ -447,4 +482,5 @@ module.exports = {
   verifyToken,
   JWT_SECRET,
   memberResponse,
+  calculateAgeFromDob,
 };

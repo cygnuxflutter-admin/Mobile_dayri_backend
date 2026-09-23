@@ -3,7 +3,11 @@ const fs = require("fs");
 const path = require("path");
 const multer = require("multer");
 const { sendSuccess } = require("../utils/response");
-const { generateToken, memberResponse } = require("./auth.controller");
+const {
+  generateToken,
+  memberResponse,
+  calculateAgeFromDob,
+} = require("./auth.controller");
 const { processRelationshipRequest } = require("./relationship.controller");
 
 const memberUploadDir = path.join(__dirname, "..", "uploads", "members");
@@ -32,7 +36,6 @@ const memberFields = [
   "mobileNumber",
   "gender",
   "dateOfBirth",
-  "age",
   "isActive",
   "isDeleted",
   "deletedBy",
@@ -55,7 +58,6 @@ const requiredMemberFields = [
   "mobileNumber",
   "gender",
   "dateOfBirth",
-  "age",
 ];
 
 const insertMemberFields = [
@@ -76,7 +78,7 @@ const createMembersTable = `
     "mobileNumber" TEXT NOT NULL,
     gender TEXT NOT NULL,
     "dateOfBirth" TEXT NOT NULL,
-    age INTEGER NOT NULL CHECK (age >= 0),
+    age INTEGER CHECK (age >= 0),
     "isActive" BOOLEAN DEFAULT TRUE,
     "isDeleted" BOOLEAN DEFAULT FALSE,
     "deletedBy" BIGINT REFERENCES members(id) ON DELETE SET NULL,
@@ -139,13 +141,24 @@ function normalizeSonIds(body) {
   return { provided: true, value: [...new Set(parsedIds)] };
 }
 
+function withComputedAge(member) {
+  if (!member) return member;
+
+  return {
+    ...member,
+    age: calculateAgeFromDob(member.dateOfBirth ?? member.DateOfBirth),
+  };
+}
+
 function buildRegistrationPayload(body, file) {
   const sonIds = parseRegistrationArray(body?.sonIds);
 
   return {
     ...body,
     age:
-      body?.age === undefined || body.age === "" ? body.age : Number(body.age),
+      body?.age === undefined || body.age === "" || body.age === null
+        ? null
+        : Number(body.age),
     fatherId:
       body?.fatherId === undefined ||
       body.fatherId === "" ||
@@ -217,6 +230,11 @@ async function ensureMembersTable(pool) {
     ALTER COLUMN "isApproved" SET DEFAULT FALSE;
   `);
   await pool.query(`
+    ALTER TABLE members DROP CONSTRAINT IF EXISTS members_age_check;
+    ALTER TABLE members ALTER COLUMN age DROP NOT NULL;
+    ALTER TABLE members ALTER COLUMN age DROP DEFAULT;
+  `);
+  await pool.query(`
     UPDATE members SET "role" = 'USER' WHERE "role" IS NULL
   `);
   await pool.query(`
@@ -239,8 +257,11 @@ function validateMember(member) {
     return { error: "Missing required fields", fields: missingFields };
   }
 
-  if (!Number.isInteger(member.age) || member.age < 0) {
-    return { error: "age must be a non-negative integer" };
+  if (member.age !== undefined && member.age !== null) {
+    const parsedAge = Number(member.age);
+    if (!Number.isInteger(parsedAge) || parsedAge < 0) {
+      return { error: "age must be a non-negative integer" };
+    }
   }
   if (!/^\d{10}$/.test(member.mobileNumber)) {
     return { error: "mobileNumber must be a valid 10-digit number" };
@@ -280,13 +301,6 @@ function validateMemberUpdate(member) {
 
   if (fieldsToUpdate.length === 0) {
     return { error: "At least one member field is required" };
-  }
-
-  if (
-    member.age !== undefined &&
-    (!Number.isInteger(member.age) || member.age < 0)
-  ) {
-    return { error: "age must be a non-negative integer" };
   }
 
   // Allow null or positive integer for fatherId on update
@@ -660,9 +674,9 @@ function memberController(pool) {
           `INSERT INTO members (
               "firstName", "firstNameEnglish", "middleName", "middleNameEnglish",
               surname, "surnameEnglish", "mobileNumber", "passwordHash", gender,
-              "dateOfBirth", age, "currentAddress", "latlng", "sonIds", "fatherId",
+              "dateOfBirth", "currentAddress", "latlng", "sonIds", "fatherId",
               "photo_url", "created_at", "fcmToken"
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, NOW(), $17)
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $12, $13, $14, $15, $16, NOW(), $17)
             RETURNING *`,
           [
             payload.firstName,
@@ -675,7 +689,6 @@ function memberController(pool) {
             passwordHash,
             payload.gender,
             payload.dateOfBirth,
-            payload.age,
             payload.currentAddress,
             payload.latlng,
             payload.sonIds,
@@ -1274,11 +1287,13 @@ function memberController(pool) {
         );
         await enrichMembersWithSonsNames(memberWithFather.rows, pool);
 
+        const createdMember = withComputedAge(memberWithFather.rows[0]);
+
         return sendSuccess(
           response,
           201,
           "Member registered successfully",
-          memberWithFather.rows[0],
+          createdMember,
         );
       } catch (error) {
         await client.query("ROLLBACK");
@@ -1396,12 +1411,14 @@ function memberController(pool) {
           }
         }
 
-        await enrichMembersWithSonsNames(groupedMembers.male, pool);
+        const maleMembers = groupedMembers.male.map(withComputedAge);
+        const femaleMembers = groupedMembers.female.map(withComputedAge);
 
-        await enrichMembersWithSonsNames(groupedMembers.female, pool);
+        await enrichMembersWithSonsNames(maleMembers, pool);
+        await enrichMembersWithSonsNames(femaleMembers, pool);
 
         return sendSuccess(response, 200, "Members fetched successfully", [
-          groupedMembers,
+          { male: maleMembers, female: femaleMembers },
         ]);
       } catch (error) {
         console.error("Failed to fetch members:", error.message);
@@ -1563,7 +1580,16 @@ function memberController(pool) {
             (
               SELECT COALESCE(json_agg(row_to_json(t)), '[]'::json)
               FROM (
-                SELECT m.id, m."firstName", m."firstNameEnglish", m."middleName", m."middleNameEnglish", m."surname", m."surnameEnglish", m."mobileNumber", m.gender, m."dateOfBirth", m.age, m."fatherId", m."sonIds", m.created_at,
+                SELECT m.id, m."firstName", m."firstNameEnglish", m."middleName", m."middleNameEnglish", m."surname", m."surnameEnglish", m."mobileNumber", m.gender, m."dateOfBirth",
+                       CASE
+                         WHEN m."dateOfBirth" IS NULL OR TRIM(m."dateOfBirth") = '' THEN NULL
+                         WHEN TRIM(m."dateOfBirth") ~ '^[0-9]{2}-[0-9]{2}-[0-9]{4}$'
+                           THEN DATE_PART('year', AGE(CURRENT_DATE, TO_DATE(TRIM(m."dateOfBirth"), 'DD-MM-YYYY')))
+                         WHEN TRIM(m."dateOfBirth") ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+                           THEN DATE_PART('year', AGE(CURRENT_DATE, TO_DATE(TRIM(m."dateOfBirth"), 'YYYY-MM-DD')))
+                         ELSE NULL
+                       END AS age,
+                       m."fatherId", m."sonIds", m.created_at,
                        CONCAT(f."firstName", ' ',f."middleName", ' ',f."surname") AS "fatherName"
                 FROM members m
                 LEFT JOIN members f ON m."fatherId" = f.id
@@ -1582,7 +1608,7 @@ function memberController(pool) {
         };
 
         // Enrich last three members with sons names
-        const lastThreeMembers = row.last_three || [];
+        const lastThreeMembers = (row.last_three || []).map(withComputedAge);
         await enrichMembersWithSonsNames(lastThreeMembers, pool);
 
         return sendSuccess(
@@ -2065,10 +2091,6 @@ function memberController(pool) {
         // Parse / Normalize Fields
         // -----------------------------
 
-        if (updateData.age !== undefined && updateData.age !== "") {
-          updateData.age = Number(updateData.age);
-        }
-
         // fatherId
         if (updateData.fatherId !== undefined) {
           if (
@@ -2184,7 +2206,6 @@ function memberController(pool) {
           "mobileNumber",
           "gender",
           "dateOfBirth",
-          "age",
 
           // Mobile side fields
           "currentAddress",
@@ -2276,11 +2297,13 @@ function memberController(pool) {
             ? "Member updated. Relationship requests have been sent for approval."
             : "Member profile updated successfully";
 
+        const updatedMember = withComputedAge(memberWithFather.rows[0]);
+
         return sendSuccess(
           response,
           200,
           successMessage,
-          memberWithFather.rows[0],
+          updatedMember,
         );
       } catch (error) {
         // Foreign key error
@@ -2358,10 +2381,6 @@ function memberController(pool) {
         // -----------------------------
         // Parse / Normalize Fields
         // -----------------------------
-
-        if (updateData.age !== undefined && updateData.age !== "") {
-          updateData.age = Number(updateData.age);
-        }
 
         // fatherId
         if (updateData.fatherId !== undefined) {
@@ -2478,7 +2497,6 @@ function memberController(pool) {
           "mobileNumber",
           "gender",
           "dateOfBirth",
-          "age",
 
           // Mobile side fields
           "currentAddress",
@@ -2570,11 +2588,13 @@ function memberController(pool) {
             ? "Profile updated. Relationship requests have been sent for approval."
             : "Member profile updated successfully";
 
+        const updatedMember = withComputedAge(memberWithFather.rows[0]);
+
         return sendSuccess(
           response,
           200,
           successMessage,
-          memberWithFather.rows[0],
+          updatedMember,
         );
       } catch (error) {
         // Foreign key error
