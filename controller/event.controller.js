@@ -79,10 +79,20 @@ function buildEventPayload(body, files) {
     .filter(isVideoFile)
     .map((file) => `/uploads/events/${file.filename}`);
 
+  const coverUrl = body.image_url || body.imageUrl;
+  if (coverUrl && imageUrls.length > 0) {
+    const normCover = normalizeMediaUrl(coverUrl);
+    const foundIdx = imageUrls.findIndex((u) => normalizeMediaUrl(u) === normCover || u === coverUrl);
+    if (foundIdx > 0) {
+      const [chosenCover] = imageUrls.splice(foundIdx, 1);
+      imageUrls.unshift(chosenCover);
+    }
+  }
+
   return {
     name: body.name?.trim() || null,
     eventDate: body.event_date || body.eventDate || null,
-    imageUrl: imageUrls[0] || null,
+    imageUrl: imageUrls[0] || (coverUrl ? normalizeMediaUrl(coverUrl) : null),
     imageUrls: imageUrls.length > 0 ? imageUrls : null,
     videoUrl: videoUrls[0] || null,
     videoUrls: videoUrls.length > 0 ? videoUrls : null,
@@ -237,7 +247,7 @@ function eventController(pool) {
           SELECT id, name, event_date, image_url, image_urls, video_url, video_urls, created_at, updated_at,
                  COUNT(*) OVER() AS total_count
           FROM events
-          ORDER BY event_date DESC
+             ORDER BY event_date DESC, id DESC
           LIMIT $1 OFFSET $2
         `;
 
@@ -341,12 +351,23 @@ function eventController(pool) {
         const deletedVideoUrlSet = new Set(
           deletedVideoUrls.map(normalizeMediaUrl),
         );
-        const nextImageUrls = [
+        let nextImageUrls = [
           ...imageUrls.filter(
             (url) => !deletedImageUrlSet.has(normalizeMediaUrl(url)),
           ),
           ...(uploadedPayload.imageUrls || []),
         ];
+        const coverUrlRaw = request.body.image_url || request.body.imageUrl;
+        if (coverUrlRaw && nextImageUrls.length > 0) {
+          const normCover = normalizeMediaUrl(coverUrlRaw);
+          const foundIdx = nextImageUrls.findIndex(
+            (u) => normalizeMediaUrl(u) === normCover || u === coverUrlRaw,
+          );
+          if (foundIdx > 0) {
+            const [chosenCover] = nextImageUrls.splice(foundIdx, 1);
+            nextImageUrls.unshift(chosenCover);
+          }
+        }
         const nextVideoUrls = [
           ...videoUrls.filter(
             (url) => !deletedVideoUrlSet.has(normalizeMediaUrl(url)),
@@ -363,7 +384,7 @@ function eventController(pool) {
             request.body.eventDate !== undefined
               ? request.body.event_date || request.body.eventDate
               : existingEvent.event_date,
-          imageUrl: nextImageUrls[0] || null,
+          imageUrl: nextImageUrls[0] || (coverUrlRaw ? normalizeMediaUrl(coverUrlRaw) : null),
           imageUrls: nextImageUrls.length > 0 ? nextImageUrls : null,
           videoUrl: nextVideoUrls[0] || null,
           videoUrls: nextVideoUrls.length > 0 ? nextVideoUrls : null,
