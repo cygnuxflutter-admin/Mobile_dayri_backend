@@ -3,7 +3,7 @@ require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 const express = require('express');
 const { Pool } = require('pg');
-const { createApiRoutes, ensureMembersTable, ensureNotificationsTable, ensureEventsTable, ensureEmergencyContactsTable, ensureRelationshipRequestsTable } = require('./routes/router.routes');
+const { createApiRoutes, ensureMembersTable, ensureNotificationsTable, ensureUserNotificationsTable, ensureEventsTable, ensureEmergencyContactsTable, ensureRelationshipRequestsTable } = require('./routes/router.routes');
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -44,6 +44,7 @@ async function startServer() {
 
   await ensureMembersTable(pool);
   await ensureNotificationsTable(pool);
+  await ensureUserNotificationsTable(pool);
   await ensureEventsTable(pool);
   await ensureEmergencyContactsTable(pool);
   await ensureRelationshipRequestsTable(pool);

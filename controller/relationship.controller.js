@@ -1,5 +1,6 @@
 const { sendSuccess } = require("../utils/response");
 const { sendPushNotification } = require("../utils/fcm.service");
+const { createInAppNotification } = require("./notification.controller");
 
 const createRelationshipRequestsTable = `
   CREATE TABLE IF NOT EXISTS relationship_requests (
@@ -125,6 +126,15 @@ async function processRelationshipRequest(pool, requesterId, targetId, relations
   const relLabel = relationshipType === "SON" ? "Father" : "Son";
   const notifTitle = "New Relationship Request";
   const notifBody = `${requesterName} wants to become your ${relLabel}. Please approve it from your dashboard.`;
+
+  await createInAppNotification(pool, {
+    userId: targetId,
+    title: notifTitle,
+    message: notifBody,
+    type: "RELATIONSHIP_REQUEST",
+    requestId: requestRecord.id,
+    relationshipType,
+  });
 
   if (typeof targetMember.fcmToken === "string" && targetMember.fcmToken.trim()) {
     await sendPushNotification(targetMember.fcmToken, {
@@ -438,34 +448,58 @@ function relationshipController(pool) {
 
         await client.query("COMMIT");
 
-        // 9. Send Notification to Requester (outside transaction)
-        (async () => {
-          try {
-            const usersInfo = await pool.query(
-              `SELECT id, "firstName", "middleName", "surname", "fcmToken"
-               FROM members WHERE id IN ($1, $2)`,
-              [requesterId, targetId]
-            );
-            const reqUser = usersInfo.rows.find((u) => Number(u.id) === requesterId);
-            const tgtUser = usersInfo.rows.find((u) => Number(u.id) === targetId);
+        // 9. Send notification to the requester after the transaction succeeds.
+        try {
+          const usersInfo = await pool.query(
+            `SELECT id, "firstName", "middleName", surname, "fcmToken"
+             FROM members WHERE id IN ($1, $2)`,
+            [requesterId, targetId],
+          );
+          const requester = usersInfo.rows.find(
+            (user) => Number(user.id) === requesterId,
+          );
+          const accepter = usersInfo.rows.find(
+            (user) => Number(user.id) === targetId,
+          );
+          const accepterName = [
+            accepter?.firstName,
+            accepter?.middleName,
+            accepter?.surname,
+          ]
+            .filter(Boolean)
+            .join(" ");
 
-            if (reqUser && reqUser.fcmToken) {
-              const tgtName = [tgtUser?.firstName, tgtUser?.surname].filter(Boolean).join(" ");
-              sendPushNotification(reqUser.fcmToken, {
-                title: "Relationship Request Accepted",
-                body: `${tgtName} accepted your relationship request.`,
-                data: {
-                  type: "RELATIONSHIP_ACCEPTED",
-                  requestId: String(requestId),
-                  targetId: String(targetId),
-                  relationshipType: reqRecord.relationship_type,
-                },
-              });
-            }
-          } catch (notifErr) {
-            console.error("Post-accept notification error:", notifErr.message);
+          await createInAppNotification(pool, {
+            userId: requesterId,
+            title: "Relationship Request Accepted",
+            message: `${accepterName} accepted your relationship request.`,
+            type: "RELATIONSHIP_ACCEPTED",
+            requestId,
+            relationshipType: reqRecord.relationship_type,
+          });
+
+          if (requester?.fcmToken) {
+            await sendPushNotification(requester.fcmToken, {
+              title: "Relationship Request Accepted",
+              body: `${accepterName} accepted your relationship request.`,
+              data: {
+                type: "RELATIONSHIP_ACCEPTED",
+                requestId: String(requestId),
+                targetId: String(targetId),
+                relationshipType: reqRecord.relationship_type,
+              },
+            });
+          } else {
+            console.warn(
+              `No FCM token found for relationship requester ${requesterId}`,
+            );
           }
-        })();
+        } catch (notificationError) {
+          console.error(
+            "Post-accept notification error:",
+            notificationError.message,
+          );
+        }
 
         return sendSuccess(
           response,

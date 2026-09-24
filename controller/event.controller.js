@@ -188,8 +188,8 @@ function validateEvent(payload) {
     };
   }
 
-  // Convert DD-MM-YYYY -> YYYY-MM-DDT00:00:00+05:30
-  payload.eventDate = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}T00:00:00+05:30`;
+  // Store the date at UTC midnight so PostgreSQL does not shift it to the previous day.
+  payload.eventDate = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}T00:00:00Z`;
 
   return null;
 }
@@ -247,7 +247,7 @@ function eventController(pool) {
           SELECT id, name, event_date, image_url, image_urls, video_url, video_urls, created_at, updated_at,
                  COUNT(*) OVER() AS total_count
           FROM events
-             ORDER BY event_date DESC, id DESC
+           ORDER BY event_date DESC, created_at DESC, id DESC
           LIMIT $1 OFFSET $2
         `;
 

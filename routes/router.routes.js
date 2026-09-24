@@ -10,6 +10,7 @@ const {
 } = require("../controller/member.controller");
 const {
   ensureNotificationsTable,
+  ensureUserNotificationsTable,
 } = require("../controller/notification.controller");
 const {
   ensureEmergencyContactsTable,
@@ -44,6 +45,7 @@ module.exports = {
   createApiRoutes,
   ensureMembersTable,
   ensureNotificationsTable,
+  ensureUserNotificationsTable,
   ensureEventsTable,
   ensureEmergencyContactsTable,
   ensureRelationshipRequestsTable,

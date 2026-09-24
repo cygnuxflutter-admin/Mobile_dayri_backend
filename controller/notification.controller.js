@@ -38,6 +38,26 @@ const createNotificationsTable = `
   )
 `;
 
+const createUserNotificationsTable = `
+  CREATE TABLE IF NOT EXISTS user_notifications (
+    id BIGSERIAL PRIMARY KEY,
+    user_id BIGINT NOT NULL REFERENCES members(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    message TEXT NOT NULL,
+    notification_type TEXT NOT NULL,
+    request_id BIGINT,
+    relationship_type VARCHAR(20),
+    is_read BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_user_notifications_user_created
+  ON user_notifications (user_id, created_at DESC, id DESC);
+
+  CREATE INDEX IF NOT EXISTS idx_user_notifications_user_unread
+  ON user_notifications (user_id, is_read);
+`;
+
 function parseContactNumbers(value) {
   if (value === undefined || value === null || value === "") {
     return null;
@@ -116,6 +136,29 @@ async function ensureNotificationsTable(pool) {
   await pool.query(createNotificationsTable);
   // ensure column to store multiple photo URLs exists
   await pool.query(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS photo_urls JSONB`);
+}
+
+async function ensureUserNotificationsTable(pool) {
+  await pool.query(createUserNotificationsTable);
+}
+
+async function createInAppNotification(pool, {
+  userId,
+  title,
+  message,
+  type,
+  requestId = null,
+  relationshipType = null,
+}) {
+  const result = await pool.query(
+    `INSERT INTO user_notifications
+       (user_id, title, message, notification_type, request_id, relationship_type)
+     VALUES ($1, $2, $3, $4, $5, $6)
+     RETURNING *`,
+    [userId, title, message, type, requestId, relationshipType],
+  );
+
+  return result.rows[0];
 }
 
 function notificationController(pool) {
@@ -401,9 +444,110 @@ function notificationController(pool) {
         );
       } catch (error) {
         console.error("Failed to fetch notification:", error.message);
-        return response
-          .status(500)
-          .json({ error: "Failed to fetch notification" });
+        return response.status(500).json({ error: "Failed to fetch notification" });
+      }
+    },
+
+    async getUserNotifications(request, response) {
+      const userId = Number(request.member?.id);
+      const page = Math.max(1, Number.parseInt(request.query.page, 10) || 1);
+      const limit = Math.min(
+        100,
+        Math.max(1, Number.parseInt(request.query.limit, 10) || 20),
+      );
+      const offset = (page - 1) * limit;
+
+      try {
+        const result = await pool.query(
+          `SELECT id, user_id, title, message, notification_type, request_id,
+                  relationship_type, is_read, created_at,
+                  COUNT(*) OVER() AS total_count
+           FROM user_notifications
+           WHERE user_id = $1
+           ORDER BY created_at DESC, id DESC
+           LIMIT $2 OFFSET $3`,
+          [userId, limit, offset],
+        );
+        const total = result.rows.length > 0
+          ? Number(result.rows[0].total_count)
+          : 0;
+        const notifications = result.rows.map(({ total_count, ...row }) => row);
+
+        return sendSuccess(response, 200, "User notifications fetched successfully", {
+          notifications,
+          meta: { total, page, limit },
+        });
+      } catch (error) {
+        console.error("Failed to fetch user notifications:", error.message);
+        return response.status(500).json({ error: "Failed to fetch user notifications" });
+      }
+    },
+
+    async getUnreadNotificationCount(request, response) {
+      const userId = Number(request.member?.id);
+
+      try {
+        const result = await pool.query(
+          `SELECT COUNT(*)::int AS unread_count
+           FROM user_notifications
+           WHERE user_id = $1 AND is_read = FALSE`,
+          [userId],
+        );
+
+        return sendSuccess(response, 200, "Unread notification count fetched successfully", {
+          unreadCount: result.rows[0].unread_count,
+        });
+      } catch (error) {
+        console.error("Failed to fetch unread notification count:", error.message);
+        return response.status(500).json({ error: "Failed to fetch unread notification count" });
+      }
+    },
+
+    async markUserNotificationRead(request, response) {
+      const userId = Number(request.member?.id);
+      const notificationId = Number.parseInt(request.params.id, 10);
+
+      if (!Number.isInteger(notificationId) || notificationId < 1) {
+        return response.status(400).json({ error: "Notification id must be a positive integer" });
+      }
+
+      try {
+        const result = await pool.query(
+          `UPDATE user_notifications
+           SET is_read = TRUE
+           WHERE id = $1 AND user_id = $2
+           RETURNING *`,
+          [notificationId, userId],
+        );
+
+        if (result.rowCount === 0) {
+          return response.status(404).json({ error: "User notification not found" });
+        }
+
+        return sendSuccess(response, 200, "Notification marked as read", result.rows[0]);
+      } catch (error) {
+        console.error("Failed to mark notification as read:", error.message);
+        return response.status(500).json({ error: "Failed to mark notification as read" });
+      }
+    },
+
+    async markAllUserNotificationsRead(request, response) {
+      const userId = Number(request.member?.id);
+
+      try {
+        const result = await pool.query(
+          `UPDATE user_notifications
+           SET is_read = TRUE
+           WHERE user_id = $1 AND is_read = FALSE`,
+          [userId],
+        );
+
+        return sendSuccess(response, 200, "All notifications marked as read", {
+          updatedCount: result.rowCount,
+        });
+      } catch (error) {
+        console.error("Failed to mark all notifications as read:", error.message);
+        return response.status(500).json({ error: "Failed to mark all notifications as read" });
       }
     },
   };
@@ -413,4 +557,6 @@ module.exports = {
   notificationUpload,
   notificationController,
   ensureNotificationsTable,
+  ensureUserNotificationsTable,
+  createInAppNotification,
 };
