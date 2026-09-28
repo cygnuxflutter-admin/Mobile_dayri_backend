@@ -17,7 +17,10 @@ const storage = multer.diskStorage({
   },
 });
 
-const eventUpload = multer({ storage, limits: { fileSize: 50 * 1024 * 1024 } });
+const eventUpload = multer({
+  storage,
+  limits: { fileSize: 1024 * 1024 * 1024 },
+});
 
 const createEventsTable = `
   CREATE TABLE IF NOT EXISTS events (

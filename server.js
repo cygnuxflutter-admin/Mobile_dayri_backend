@@ -48,7 +48,8 @@ async function startServer() {
   await ensureEventsTable(pool);
   await ensureEmergencyContactsTable(pool);
   await ensureRelationshipRequestsTable(pool);
-  app.listen(port, () => {
+  const server = app.listen(port, () => {
     console.log(`PostgreSQL API listening on port ${port}`);
   });
+  server.requestTimeout = 30 * 60 * 1000;
 }
