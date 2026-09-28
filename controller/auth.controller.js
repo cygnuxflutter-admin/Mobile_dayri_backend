@@ -6,6 +6,12 @@ function normalizeMobileNumber(value) {
   return String(value || "").replace(/[\s()-]/g, "");
 }
 
+function normalizeCountryCode(value) {
+  const normalizedValue = String(value ?? "").trim();
+  const digits = normalizedValue.replace(/^\+/, "");
+  return /^\d{1,4}$/.test(digits) ? `+${digits}` : normalizedValue;
+}
+
 const JWT_SECRET =
   process.env.JWT_SECRET || "your-secret-key-change-in-production";
 const JWT_EXPIRY = "7d";
@@ -67,6 +73,7 @@ function memberResponse(member) {
     surname: member.surname,
     surnameEnglish: member.surnameEnglish,
     mobileNumber: member.mobileNumber,
+    countryCode: member.countryCode,
     role: member.role,
     age: calculateAgeFromDob(member.dateOfBirth),
     DateOfBirth: member.dateOfBirth,
@@ -85,21 +92,27 @@ function authController(pool) {
     async login(request, response) {
       const body = request.body || {};
       const mobileNumber = body.mobileNumber;
+      const countryCode = normalizeCountryCode(body.countryCode);
       const password = body.password;
       const fcmToken = body.fcmToken ?? body.fcm_token;
 
-      if (!mobileNumber || !password) {
+      if (!mobileNumber || !countryCode || !password) {
         return response.status(400).json({
-          error: "mobileNumber and password are required",
+          error: "mobileNumber, countryCode, and password are required",
+        });
+      }
+      if (!/^\+\d{1,4}$/.test(countryCode)) {
+        return response.status(400).json({
+          error: "countryCode must be a valid dialing code, such as +91",
         });
       }
 
       try {
         const result = await pool.query(
           `SELECT * FROM members
-           WHERE "mobileNumber" = $1
+           WHERE "mobileNumber" = $1 AND "countryCode" = $2
            LIMIT 1`,
-          [String(mobileNumber).replace(/[\s()-]/g, "")],
+          [normalizeMobileNumber(mobileNumber), countryCode],
         );
 
         if (result.rowCount === 0) {

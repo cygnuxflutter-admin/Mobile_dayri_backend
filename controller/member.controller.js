@@ -76,29 +76,59 @@ const createMembersTable = `
     surname TEXT NOT NULL,
     "surnameEnglish" TEXT NOT NULL,
     "mobileNumber" TEXT NOT NULL,
+    "countryCode" TEXT NOT NULL DEFAULT '+91',
     gender TEXT NOT NULL,
     "dateOfBirth" TEXT NOT NULL,
+    "isOutsideIndia" BOOLEAN NOT NULL DEFAULT FALSE,
+    country TEXT,
+    state TEXT,
+    city TEXT,
     "isActive" BOOLEAN DEFAULT TRUE,
     "isDeleted" BOOLEAN DEFAULT FALSE,
     "deletedBy" BIGINT REFERENCES members(id) ON DELETE SET NULL,
     "isApproved" BOOLEAN DEFAULT FALSE,
     "approvedBy" BIGINT REFERENCES members(id) ON DELETE SET NULL,
-  "created_at" TIMESTAMPTZ DEFAULT NOW(),
+    "created_at" TIMESTAMPTZ DEFAULT NOW(),
     "updated_at" TIMESTAMPTZ DEFAULT NOW(),
     "photo_url" TEXT,
     "currentAddress" TEXT,
     "latlng" TEXT,
-  "role" TEXT NOT NULL DEFAULT 'USER' CHECK ("role" IN ('USER', 'ADMIN', 'SUPERADMIN')),
+    "role" TEXT NOT NULL DEFAULT 'USER' CHECK ("role" IN ('USER', 'ADMIN', 'SUPERADMIN')),
     "sonIds" BIGINT[],
-  "fatherId" BIGINT REFERENCES members(id) ON DELETE SET NULL,
+    "fatherId" BIGINT REFERENCES members(id) ON DELETE SET NULL,
     "fcmToken" TEXT,
     "passwordHash" TEXT,
-  "isPasswordChange" BOOLEAN NOT NULL DEFAULT FALSE
+    "isPasswordChange" BOOLEAN NOT NULL DEFAULT FALSE
   )
 `;
 
 function normalizeMobileNumber(value) {
   return String(value || "").replace(/[\s()-]/g, "");
+}
+
+function normalizeBoolean(value, defaultValue = false) {
+  if (value === undefined || value === null || value === "") {
+    return defaultValue;
+  }
+  if (value === true || value === false) return value;
+  if (typeof value === "string") {
+    const normalizedValue = value.trim().toLowerCase();
+    if (normalizedValue === "true") return true;
+    if (normalizedValue === "false") return false;
+  }
+  return value;
+}
+
+function normalizeLocation(value) {
+  if (value === undefined || value === null) return null;
+  const normalizedValue = String(value).trim();
+  return normalizedValue || null;
+}
+
+function normalizeCountryCode(value) {
+  const normalizedValue = String(value ?? "+91").trim();
+  const digits = normalizedValue.replace(/^\+/, "");
+  return /^\d{1,4}$/.test(digits) ? `+${digits}` : normalizedValue;
 }
 
 function parseRegistrationArray(value) {
@@ -158,6 +188,11 @@ function buildRegistrationPayload(body, file) {
 
   return {
     ...sanitizedBody,
+    countryCode: normalizeCountryCode(sanitizedBody?.countryCode),
+    isOutsideIndia: normalizeBoolean(sanitizedBody?.isOutsideIndia),
+    country: normalizeLocation(sanitizedBody?.country),
+    state: normalizeLocation(sanitizedBody?.state),
+    city: normalizeLocation(sanitizedBody?.city),
     age:
       sanitizedBody?.age === undefined ||
       sanitizedBody.age === "" ||
@@ -209,8 +244,13 @@ async function ensureMembersTable(pool) {
     ADD COLUMN IF NOT EXISTS surname TEXT,
     ADD COLUMN IF NOT EXISTS "surnameEnglish" TEXT,
     ADD COLUMN IF NOT EXISTS "mobileNumber" TEXT,
+    ADD COLUMN IF NOT EXISTS "countryCode" TEXT NOT NULL DEFAULT '+91',
     ADD COLUMN IF NOT EXISTS gender TEXT,
     ADD COLUMN IF NOT EXISTS "dateOfBirth" TEXT,
+    ADD COLUMN IF NOT EXISTS "isOutsideIndia" BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS country TEXT,
+    ADD COLUMN IF NOT EXISTS state TEXT,
+    ADD COLUMN IF NOT EXISTS city TEXT,
     ADD COLUMN IF NOT EXISTS age INTEGER,
     ADD COLUMN IF NOT EXISTS "isActive" BOOLEAN DEFAULT TRUE,
     ADD COLUMN IF NOT EXISTS "isDeleted" BOOLEAN DEFAULT FALSE,
@@ -260,6 +300,22 @@ function validateMember(member) {
 
   if (missingFields.length > 0) {
     return { error: "Missing required fields", fields: missingFields };
+  }
+
+  if (typeof member.isOutsideIndia !== "boolean") {
+    return { error: "isOutsideIndia must be a boolean" };
+  }
+  if (!/^\+\d{1,4}$/.test(member.countryCode)) {
+    return { error: "countryCode must be a valid dialing code, such as +91" };
+  }
+  if (
+    member.isOutsideIndia &&
+    ["country", "state", "city"].some((field) => !member[field])
+  ) {
+    return {
+      error: "country, state, and city are required for users outside India",
+      fields: ["country", "state", "city"],
+    };
   }
 
   if (member.age !== undefined && member.age !== null) {
@@ -685,10 +741,11 @@ function memberController(pool) {
         const memberResult = await client.query(
           `INSERT INTO members (
               "firstName", "firstNameEnglish", "middleName", "middleNameEnglish",
-              surname, "surnameEnglish", "mobileNumber", "passwordHash", gender,
-              "dateOfBirth", "currentAddress", "latlng", "sonIds", "fatherId",
+              surname, "surnameEnglish", "mobileNumber", "countryCode", "passwordHash", gender,
+              "dateOfBirth", "isOutsideIndia", country, state, city,
+              "currentAddress", "latlng", "sonIds", "fatherId",
               "photo_url", "created_at", "isPasswordChange"
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW(), $16)
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, NOW(), $21)
             RETURNING *`,
           [
             payload.firstName,
@@ -698,9 +755,14 @@ function memberController(pool) {
             payload.surname,
             payload.surnameEnglish,
             payload.mobileNumber,
+            payload.countryCode,
             passwordHash,
             payload.gender,
             payload.dateOfBirth,
+            payload.isOutsideIndia,
+            payload.country,
+            payload.state,
+            payload.city,
             payload.currentAddress,
             payload.latlng,
             payload.sonIds,
