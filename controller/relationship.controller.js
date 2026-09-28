@@ -222,6 +222,11 @@ function relationshipController(pool) {
             m."surnameEnglish" AS "requesterSurnameEnglish",
             m."photo_url" AS "requesterPhotoUrl",
             m."mobileNumber" AS "requesterMobileNumber",
+            m."countryCode" AS "requesterCountryCode",
+            m."isOutsideIndia" AS "requesterIsOutsideIndia",
+            m.country AS "requesterCountry",
+            m.state AS "requesterState",
+            m.city AS "requesterCity",
             m.gender AS "requesterGender",
             CASE
               WHEN m."dateOfBirth" IS NULL OR TRIM(m."dateOfBirth") = '' THEN NULL
@@ -286,6 +291,11 @@ function relationshipController(pool) {
             m."surnameEnglish" AS "targetSurnameEnglish",
             m."photo_url" AS "targetPhotoUrl",
             m."mobileNumber" AS "targetMobileNumber",
+            m."countryCode" AS "targetCountryCode",
+            m."isOutsideIndia" AS "targetIsOutsideIndia",
+            m.country AS "targetCountry",
+            m.state AS "targetState",
+            m.city AS "targetCity",
             m.gender AS "targetGender",
             CASE
               WHEN m."dateOfBirth" IS NULL OR TRIM(m."dateOfBirth") = '' THEN NULL

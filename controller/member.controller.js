@@ -34,6 +34,11 @@ const memberFields = [
   "surname",
   "surnameEnglish",
   "mobileNumber",
+  "countryCode",
+  "isOutsideIndia",
+  "country",
+  "state",
+  "city",
   "gender",
   "dateOfBirth",
   "isActive",
@@ -362,6 +367,19 @@ function validateMemberUpdate(member) {
 
   if (fieldsToUpdate.length === 0) {
     return { error: "At least one member field is required" };
+  }
+
+  if (
+    member.countryCode !== undefined &&
+    !/^\+\d{1,4}$/.test(member.countryCode)
+  ) {
+    return { error: "countryCode must be a valid dialing code, such as +91" };
+  }
+  if (
+    member.isOutsideIndia !== undefined &&
+    typeof member.isOutsideIndia !== "boolean"
+  ) {
+    return { error: "isOutsideIndia must be a boolean" };
   }
 
   // Allow null or positive integer for fatherId on update
@@ -1613,7 +1631,12 @@ function memberController(pool) {
         const pendingOutgoing = await pool.query(
           `SELECT r.id, r.target_id, r.relationship_type, r.status, r.created_at,
                   CONCAT(m."firstName", ' ', m."middleName", ' ', m."surname") AS "targetName",
-                  m."photo_url" AS "targetPhotoUrl"
+              m."photo_url" AS "targetPhotoUrl",
+              m."countryCode" AS "targetCountryCode",
+              m."isOutsideIndia" AS "targetIsOutsideIndia",
+              m.country AS "targetCountry",
+              m.state AS "targetState",
+              m.city AS "targetCity"
            FROM relationship_requests r
            JOIN members m ON r.target_id = m.id
            WHERE r.requester_id = $1 AND r.status = 'PENDING'
@@ -1625,7 +1648,12 @@ function memberController(pool) {
         const pendingIncoming = await pool.query(
           `SELECT r.id, r.requester_id, r.relationship_type, r.status, r.created_at,
                   CONCAT(m."firstName", ' ', m."middleName", ' ', m."surname") AS "requesterName",
-                  m."photo_url" AS "requesterPhotoUrl"
+              m."photo_url" AS "requesterPhotoUrl",
+              m."countryCode" AS "requesterCountryCode",
+              m."isOutsideIndia" AS "requesterIsOutsideIndia",
+              m.country AS "requesterCountry",
+              m.state AS "requesterState",
+              m.city AS "requesterCity"
            FROM relationship_requests r
            JOIN members m ON r.requester_id = m.id
            WHERE r.target_id = $1 AND r.status = 'PENDING'
@@ -1661,7 +1689,7 @@ function memberController(pool) {
             (
               SELECT COALESCE(json_agg(row_to_json(t)), '[]'::json)
               FROM (
-                SELECT m.id, m."firstName", m."firstNameEnglish", m."middleName", m."middleNameEnglish", m."surname", m."surnameEnglish", m."mobileNumber", m.gender, m."dateOfBirth",
+                SELECT m.id, m."firstName", m."firstNameEnglish", m."middleName", m."middleNameEnglish", m."surname", m."surnameEnglish", m."mobileNumber", m."countryCode", m."isOutsideIndia", m.country, m.state, m.city, m.gender, m."dateOfBirth",
                        CASE
                          WHEN m."dateOfBirth" IS NULL OR TRIM(m."dateOfBirth") = '' THEN NULL
                          WHEN TRIM(m."dateOfBirth") ~ '^[0-9]{2}-[0-9]{2}-[0-9]{4}$'
@@ -2143,7 +2171,7 @@ function memberController(pool) {
       try {
         // Check target member exists and is not deleted
         const existingResult = await pool.query(
-          `SELECT id, "isDeleted", "mobileNumber", "fatherId", "sonIds"
+          `SELECT id, "isDeleted", "mobileNumber", "countryCode", "fatherId", "sonIds"
        FROM members
        WHERE id = $1
          AND COALESCE("isDeleted", false) = false
@@ -2158,6 +2186,18 @@ function memberController(pool) {
         }
 
         const updateData = { ...request.body };
+
+        if (updateData.countryCode !== undefined) {
+          updateData.countryCode = normalizeCountryCode(updateData.countryCode);
+        }
+        if (updateData.isOutsideIndia !== undefined) {
+          updateData.isOutsideIndia = normalizeBoolean(updateData.isOutsideIndia);
+        }
+        for (const field of ["country", "state", "city"]) {
+          if (updateData[field] !== undefined) {
+            updateData[field] = normalizeLocation(updateData[field]);
+          }
+        }
 
         if (
           updateData.fcmToken === undefined &&
@@ -2225,19 +2265,26 @@ function memberController(pool) {
         const existingMobileNumber = normalizeMobileNumber(
           existingResult.rows[0].mobileNumber,
         );
+        const existingCountryCode = normalizeCountryCode(
+          existingResult.rows[0].countryCode,
+        );
+        const mobileNumberForCheck =
+          updateData.mobileNumber ?? existingMobileNumber;
+        const countryCodeForCheck =
+          updateData.countryCode ?? existingCountryCode;
 
         if (
-          updateData.mobileNumber &&
-          updateData.mobileNumber !== existingMobileNumber
+          mobileNumberForCheck !== existingMobileNumber ||
+          countryCodeForCheck !== existingCountryCode
         ) {
           const duplicateCheck = await pool.query(
             `SELECT id
          FROM members
-         WHERE "mobileNumber" = $1
-           AND id != $2
+         WHERE "mobileNumber" = $1 AND "countryCode" = $2
+           AND id != $3
            AND COALESCE("isDeleted", false) = false
          LIMIT 1`,
-            [updateData.mobileNumber, memberId],
+            [mobileNumberForCheck, countryCodeForCheck, memberId],
           );
 
           if (duplicateCheck.rowCount > 0) {
@@ -2288,6 +2335,11 @@ function memberController(pool) {
           "surname",
           "surnameEnglish",
           "mobileNumber",
+          "countryCode",
+          "isOutsideIndia",
+          "country",
+          "state",
+          "city",
           "gender",
           "dateOfBirth",
 
@@ -2363,7 +2415,12 @@ function memberController(pool) {
         const pendingOutgoing = await pool.query(
           `SELECT r.id, r.target_id, r.relationship_type, r.status, r.created_at,
                   CONCAT(m."firstName", ' ', m."middleName", ' ', m."surname") AS "targetName",
-                  m."photo_url" AS "targetPhotoUrl"
+              m."photo_url" AS "targetPhotoUrl",
+              m."countryCode" AS "targetCountryCode",
+              m."isOutsideIndia" AS "targetIsOutsideIndia",
+              m.country AS "targetCountry",
+              m.state AS "targetState",
+              m.city AS "targetCity"
            FROM relationship_requests r
            JOIN members m ON r.target_id = m.id
            WHERE r.requester_id = $1 AND r.status = 'PENDING'
@@ -2436,7 +2493,7 @@ function memberController(pool) {
       try {
         // Check target member exists and is not deleted
         const existingResult = await pool.query(
-          `SELECT id, "isDeleted", "mobileNumber", "fatherId", "sonIds"
+          `SELECT id, "isDeleted", "mobileNumber", "countryCode", "fatherId", "sonIds"
        FROM members
        WHERE id = $1
          AND COALESCE("isDeleted", false) = false
@@ -2451,6 +2508,18 @@ function memberController(pool) {
         }
 
         const updateData = { ...request.body };
+
+        if (updateData.countryCode !== undefined) {
+          updateData.countryCode = normalizeCountryCode(updateData.countryCode);
+        }
+        if (updateData.isOutsideIndia !== undefined) {
+          updateData.isOutsideIndia = normalizeBoolean(updateData.isOutsideIndia);
+        }
+        for (const field of ["country", "state", "city"]) {
+          if (updateData[field] !== undefined) {
+            updateData[field] = normalizeLocation(updateData[field]);
+          }
+        }
 
         if (
           updateData.fcmToken === undefined &&
@@ -2514,19 +2583,26 @@ function memberController(pool) {
         const existingMobileNumber = normalizeMobileNumber(
           existingResult.rows[0].mobileNumber,
         );
+        const existingCountryCode = normalizeCountryCode(
+          existingResult.rows[0].countryCode,
+        );
+        const mobileNumberForCheck =
+          updateData.mobileNumber ?? existingMobileNumber;
+        const countryCodeForCheck =
+          updateData.countryCode ?? existingCountryCode;
 
         if (
-          updateData.mobileNumber &&
-          updateData.mobileNumber !== existingMobileNumber
+          mobileNumberForCheck !== existingMobileNumber ||
+          countryCodeForCheck !== existingCountryCode
         ) {
           const duplicateCheck = await pool.query(
             `SELECT id
          FROM members
-         WHERE "mobileNumber" = $1
-           AND id != $2
+         WHERE "mobileNumber" = $1 AND "countryCode" = $2
+           AND id != $3
            AND COALESCE("isDeleted", false) = false
          LIMIT 1`,
-            [updateData.mobileNumber, memberId],
+            [mobileNumberForCheck, countryCodeForCheck, memberId],
           );
 
           if (duplicateCheck.rowCount > 0) {
@@ -2577,6 +2653,11 @@ function memberController(pool) {
           "surname",
           "surnameEnglish",
           "mobileNumber",
+          "countryCode",
+          "isOutsideIndia",
+          "country",
+          "state",
+          "city",
           "gender",
           "dateOfBirth",
 
@@ -2652,7 +2733,12 @@ function memberController(pool) {
         const pendingOutgoing = await pool.query(
           `SELECT r.id, r.target_id, r.relationship_type, r.status, r.created_at,
                   CONCAT(m."firstName", ' ', m."middleName", ' ', m."surname") AS "targetName",
-                  m."photo_url" AS "targetPhotoUrl"
+              m."photo_url" AS "targetPhotoUrl",
+              m."countryCode" AS "targetCountryCode",
+              m."isOutsideIndia" AS "targetIsOutsideIndia",
+              m.country AS "targetCountry",
+              m.state AS "targetState",
+              m.city AS "targetCity"
            FROM relationship_requests r
            JOIN members m ON r.target_id = m.id
            WHERE r.requester_id = $1 AND r.status = 'PENDING'
