@@ -2193,6 +2193,11 @@ function memberController(pool) {
         if (updateData.isOutsideIndia !== undefined) {
           updateData.isOutsideIndia = normalizeBoolean(updateData.isOutsideIndia);
         }
+        if (updateData.isOutsideIndia === false) {
+          updateData.country = null;
+          updateData.state = null;
+          updateData.city = null;
+        }
         for (const field of ["country", "state", "city"]) {
           if (updateData[field] !== undefined) {
             updateData[field] = normalizeLocation(updateData[field]);
@@ -2514,6 +2519,11 @@ function memberController(pool) {
         }
         if (updateData.isOutsideIndia !== undefined) {
           updateData.isOutsideIndia = normalizeBoolean(updateData.isOutsideIndia);
+        }
+        if (updateData.isOutsideIndia === false) {
+          updateData.country = null;
+          updateData.state = null;
+          updateData.city = null;
         }
         for (const field of ["country", "state", "city"]) {
           if (updateData[field] !== undefined) {
