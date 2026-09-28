@@ -31,6 +31,8 @@ const createEventsTable = `
     image_urls JSONB,
     video_url TEXT,
     video_urls JSONB,
+    video_link TEXT,
+    video_links JSONB,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
   )
@@ -47,6 +49,17 @@ async function ensureEventsTable(pool) {
   await pool.query(
     `ALTER TABLE events ADD COLUMN IF NOT EXISTS video_urls JSONB`,
   );
+  await pool.query(
+    `ALTER TABLE events ADD COLUMN IF NOT EXISTS video_link TEXT`,
+  );
+  await pool.query(
+    `ALTER TABLE events ADD COLUMN IF NOT EXISTS video_links JSONB`,
+  );
+  await pool.query(`
+    UPDATE events
+    SET video_links = jsonb_build_array(video_link)
+    WHERE video_link IS NOT NULL AND video_links IS NULL
+  `);
 }
 
 function normalizeFilesInput(files) {
@@ -99,7 +112,28 @@ function buildEventPayload(body, files) {
     imageUrls: imageUrls.length > 0 ? imageUrls : null,
     videoUrl: videoUrls[0] || null,
     videoUrls: videoUrls.length > 0 ? videoUrls : null,
+    videoLinks: normalizeVideoLinks(
+      body.video_links ?? body.videoLinks ?? body.video_link ?? body.videoLink,
+    ),
   };
+}
+
+function normalizeVideoLinks(value) {
+  if (value === undefined || value === null || value === "") return [];
+
+  let links = value;
+  if (typeof value === "string") {
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) links = parsed;
+    } catch {
+      // Treat ordinary strings as a single URL.
+    }
+  }
+
+  return (Array.isArray(links) ? links : [links])
+    .map((link) => String(link ?? "").trim())
+    .filter(Boolean);
 }
 
 function parseMediaUrls(value) {
@@ -212,8 +246,8 @@ function eventController(pool) {
 
       try {
         const result = await pool.query(
-          `INSERT INTO events (name, event_date, image_url, image_urls, video_url, video_urls)
-           VALUES ($1, $2::timestamptz, $3, $4::jsonb, $5, $6::jsonb)
+          `INSERT INTO events (name, event_date, image_url, image_urls, video_url, video_urls, video_link, video_links)
+           VALUES ($1, $2::timestamptz, $3, $4::jsonb, $5, $6::jsonb, $7, $8::jsonb)
            RETURNING *`,
           [
             payload.name,
@@ -222,6 +256,10 @@ function eventController(pool) {
             payload.imageUrls ? JSON.stringify(payload.imageUrls) : null,
             payload.videoUrl,
             payload.videoUrls ? JSON.stringify(payload.videoUrls) : null,
+            payload.videoLinks[0] || null,
+            payload.videoLinks.length > 0
+              ? JSON.stringify(payload.videoLinks)
+              : null,
           ],
         );
 
@@ -247,7 +285,7 @@ function eventController(pool) {
         const offset = (page - 1) * limit;
 
         const query = `
-          SELECT id, name, event_date, image_url, image_urls, video_url, video_urls, created_at, updated_at,
+          SELECT id, name, event_date, image_url, image_urls, video_url, video_urls, video_link, video_links, created_at, updated_at,
                  COUNT(*) OVER() AS total_count
           FROM events
            ORDER BY event_date DESC, created_at DESC, id DESC
@@ -391,6 +429,20 @@ function eventController(pool) {
           imageUrls: nextImageUrls.length > 0 ? nextImageUrls : null,
           videoUrl: nextVideoUrls[0] || null,
           videoUrls: nextVideoUrls.length > 0 ? nextVideoUrls : null,
+          videoLinks:
+            request.body.video_link !== undefined ||
+            request.body.videoLink !== undefined ||
+            request.body.video_links !== undefined ||
+            request.body.videoLinks !== undefined
+              ? normalizeVideoLinks(
+                  request.body.video_links ??
+                    request.body.videoLinks ??
+                    request.body.video_link ??
+                    request.body.videoLink,
+                )
+              : Array.isArray(existingEvent.video_links)
+                ? existingEvent.video_links
+                : normalizeVideoLinks(existingEvent.video_link),
         };
         let validationError = null;
         if (!payload.name) {
@@ -413,8 +465,9 @@ function eventController(pool) {
           `UPDATE events
            SET name = $1, event_date = $2::timestamptz, image_url = $3,
                image_urls = $4::jsonb, video_url = $5, video_urls = $6::jsonb,
+               video_link = $7, video_links = $8::jsonb,
                updated_at = NOW()
-           WHERE id = $7
+             WHERE id = $9
            RETURNING *`,
           [
             payload.name,
@@ -423,6 +476,10 @@ function eventController(pool) {
             payload.imageUrls ? JSON.stringify(payload.imageUrls) : null,
             payload.videoUrl,
             payload.videoUrls ? JSON.stringify(payload.videoUrls) : null,
+            payload.videoLinks[0] || null,
+            payload.videoLinks.length > 0
+              ? JSON.stringify(payload.videoLinks)
+              : null,
             eventId,
           ],
         );
