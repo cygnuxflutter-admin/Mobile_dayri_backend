@@ -293,6 +293,29 @@ async function ensureMembersTable(pool) {
     ADD CONSTRAINT members_role_check CHECK ("role" IN ('USER', 'ADMIN', 'SUPERADMIN'));
   `);
 
+  // Performance indexes
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_members_mobile_number
+      ON members ("mobileNumber");
+    CREATE INDEX IF NOT EXISTS idx_members_mobile_country
+      ON members ("mobileNumber", "countryCode");
+    CREATE INDEX IF NOT EXISTS idx_members_father_id
+      ON members ("fatherId");
+    CREATE INDEX IF NOT EXISTS idx_members_is_deleted
+      ON members ("isDeleted");
+    CREATE INDEX IF NOT EXISTS idx_members_is_approved_pending
+      ON members ("isApproved") WHERE "isApproved" = FALSE;
+    CREATE INDEX IF NOT EXISTS idx_members_active_approved
+      ON members ("isActive", "isApproved", "isDeleted");
+    CREATE INDEX IF NOT EXISTS idx_members_surname_lower
+      ON members (LOWER(TRIM(surname)));
+    CREATE INDEX IF NOT EXISTS idx_members_gender_surname
+      ON members (gender, surname, id);
+    CREATE INDEX IF NOT EXISTS idx_members_created_at
+      ON members (created_at DESC);
+  `);
+  console.log("Members table indexes ensured");
+
   if (result.rows[0].exists) {
     console.log("Members table already exists");
   }
@@ -538,10 +561,11 @@ async function handleRelationshipUpdate(
     const removedSons = existingSonIds.filter(
       (id) => !requestedSonIds.includes(id),
     );
-    for (const sonId of removedSons) {
+    if (removedSons.length > 0) {
       await pool.query(
-        `UPDATE members SET "fatherId" = NULL, "updated_at" = NOW() WHERE id = $1 AND "fatherId" = $2`,
-        [sonId, memberId],
+        `UPDATE members SET "fatherId" = NULL, "updated_at" = NOW()
+         WHERE id = ANY($1::bigint[]) AND "fatherId" = $2`,
+        [removedSons, memberId],
       );
     }
 
@@ -1088,20 +1112,42 @@ function memberController(pool) {
 
     async approvalPendingMember(request, response) {
       try {
+        const page = Math.max(1, Number.parseInt(request.query.page, 10) || 1);
+        const limit = Math.min(100, Math.max(1, Number.parseInt(request.query.limit, 10) || 50));
+        const offset = (page - 1) * limit;
+
         const data = await pool.query(
-          `SELECT * FROM members WHERE "isApproved" = FALSE AND COALESCE("isDeleted", false) = false ORDER BY "created_at" DESC`,
+          `SELECT id, "firstName", "firstNameEnglish", "middleName", "middleNameEnglish",
+                  surname, "surnameEnglish", "mobileNumber", "countryCode", gender,
+                  "dateOfBirth", "isOutsideIndia", country, state, city,
+                  "photo_url", "currentAddress", "latlng", "fatherId", "sonIds",
+                  "isActive", "isDeleted", "isApproved", "approvedBy",
+                  "created_at", "updated_at", "role",
+                  COUNT(*) OVER() AS total_count
+           FROM members
+           WHERE "isApproved" = FALSE AND COALESCE("isDeleted", false) = false
+           ORDER BY "created_at" DESC
+           LIMIT $1 OFFSET $2`,
+          [limit, offset],
         );
+
+        const total = data.rows.length > 0 ? Number(data.rows[0].total_count) : 0;
+        const members = data.rows.map(({ total_count, ...rest }) => rest);
+
         return sendSuccess(
           response,
           200,
           "Pending approval members retrieved successfully",
-          data.rows,
+          {
+            members,
+            meta: { total, page, limit },
+          },
         );
       } catch (error) {
-        console.error("Failed to send registration OTP:", error.message);
+        console.error("Failed to fetch pending members:", error.message);
         return response
           .status(500)
-          .json({ error: "Failed to send registration OTP" });
+          .json({ error: "Failed to fetch pending members" });
       }
     },
 
@@ -1508,8 +1554,7 @@ function memberController(pool) {
         const maleMembers = groupedMembers.male.map(withComputedAge);
         const femaleMembers = groupedMembers.female.map(withComputedAge);
 
-        await enrichMembersWithSonsNames(maleMembers, pool);
-        await enrichMembersWithSonsNames(femaleMembers, pool);
+        await enrichMembersWithSonsNames([...maleMembers, ...femaleMembers], pool);
 
         return sendSuccess(response, 200, "Members fetched successfully", [
           { male: maleMembers, female: femaleMembers },
@@ -1526,36 +1571,37 @@ function memberController(pool) {
     async getUpcomingBirthdays(request, response) {
       try {
         const result = await pool.query(`
-          WITH parsed_members AS (
-            SELECT
-              m.*,
-              CASE
-                WHEN TRIM(m."dateOfBirth") ~ '^[0-9]{2}-[0-9]{2}-[0-9]{4}$'
-                  THEN TO_DATE(TRIM(m."dateOfBirth"), 'DD-MM-YYYY')
-                WHEN TRIM(m."dateOfBirth") ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
-                  THEN TO_DATE(TRIM(m."dateOfBirth"), 'YYYY-MM-DD')
-                ELSE NULL
-              END AS birth_date
-            FROM members m
-            WHERE COALESCE(m."isDeleted", false) = false
-              AND COALESCE(m."isActive", true) = true
-          )
-          SELECT
-            p.*,
-            upcoming.day::date AS "upcomingBirthday"
-          FROM parsed_members p
-          CROSS JOIN LATERAL (
-            SELECT day
+          WITH upcoming_days AS (
+            SELECT day::date AS day, TO_CHAR(day, 'MMDD') AS mmdd
             FROM generate_series(
               CURRENT_DATE - INTERVAL '1 day',
               CURRENT_DATE + INTERVAL '7 days',
               INTERVAL '1 day'
             ) AS day
-            WHERE TO_CHAR(day, 'MMDD') = TO_CHAR(p.birth_date, 'MMDD')
-            ORDER BY day
-            LIMIT 1
-          ) upcoming
-          ORDER BY upcoming.day, p."firstName", p.surname
+          ), parsed_members AS (
+            SELECT
+              m.*,
+              TO_CHAR(
+                CASE
+                  WHEN TRIM(m."dateOfBirth") ~ '^[0-9]{2}-[0-9]{2}-[0-9]{4}$'
+                    THEN TO_DATE(TRIM(m."dateOfBirth"), 'DD-MM-YYYY')
+                  WHEN TRIM(m."dateOfBirth") ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+                    THEN TO_DATE(TRIM(m."dateOfBirth"), 'YYYY-MM-DD')
+                  ELSE NULL
+                END,
+                'MMDD'
+              ) AS mmdd
+            FROM members m
+            WHERE COALESCE(m."isDeleted", false) = false
+              AND COALESCE(m."isActive", true) = true
+              AND m."dateOfBirth" IS NOT NULL
+          )
+          SELECT
+            p.*,
+            u.day AS "upcomingBirthday"
+          FROM parsed_members p
+          JOIN upcoming_days u ON p.mmdd = u.mmdd
+          ORDER BY u.day, p."firstName", p.surname
         `);
 
         const birthdayRows = result.rows.map((member) => ({
@@ -1624,42 +1670,40 @@ function memberController(pool) {
 
         const member = withComputedAge(result.rows[0]);
 
-        // Get sons names
-        await enrichMembersWithSonsNames([member], pool);
-
-        // Fetch pending outgoing relationship requests
-        const pendingOutgoing = await pool.query(
-          `SELECT r.id, r.target_id, r.relationship_type, r.status, r.created_at,
-                  CONCAT(m."firstName", ' ', m."middleName", ' ', m."surname") AS "targetName",
-              m."photo_url" AS "targetPhotoUrl",
-              m."countryCode" AS "targetCountryCode",
-              m."isOutsideIndia" AS "targetIsOutsideIndia",
-              m.country AS "targetCountry",
-              m.state AS "targetState",
-              m.city AS "targetCity"
-           FROM relationship_requests r
-           JOIN members m ON r.target_id = m.id
-           WHERE r.requester_id = $1 AND r.status = 'PENDING'
-           ORDER BY r.created_at DESC`,
-          [memberId],
-        );
-
-        // Fetch pending incoming relationship requests
-        const pendingIncoming = await pool.query(
-          `SELECT r.id, r.requester_id, r.relationship_type, r.status, r.created_at,
-                  CONCAT(m."firstName", ' ', m."middleName", ' ', m."surname") AS "requesterName",
-              m."photo_url" AS "requesterPhotoUrl",
-              m."countryCode" AS "requesterCountryCode",
-              m."isOutsideIndia" AS "requesterIsOutsideIndia",
-              m.country AS "requesterCountry",
-              m.state AS "requesterState",
-              m.city AS "requesterCity"
-           FROM relationship_requests r
-           JOIN members m ON r.requester_id = m.id
-           WHERE r.target_id = $1 AND r.status = 'PENDING'
-           ORDER BY r.created_at DESC`,
-          [memberId],
-        );
+        // Fetch sons names and pending requests in parallel
+        const [, pendingOutgoing, pendingIncoming] = await Promise.all([
+          enrichMembersWithSonsNames([member], pool),
+          pool.query(
+            `SELECT r.id, r.target_id, r.relationship_type, r.status, r.created_at,
+                    CONCAT(m."firstName", ' ', m."middleName", ' ', m."surname") AS "targetName",
+                m."photo_url" AS "targetPhotoUrl",
+                m."countryCode" AS "targetCountryCode",
+                m."isOutsideIndia" AS "targetIsOutsideIndia",
+                m.country AS "targetCountry",
+                m.state AS "targetState",
+                m.city AS "targetCity"
+             FROM relationship_requests r
+             JOIN members m ON r.target_id = m.id
+             WHERE r.requester_id = $1 AND r.status = 'PENDING'
+             ORDER BY r.created_at DESC`,
+            [memberId],
+          ),
+          pool.query(
+            `SELECT r.id, r.requester_id, r.relationship_type, r.status, r.created_at,
+                    CONCAT(m."firstName", ' ', m."middleName", ' ', m."surname") AS "requesterName",
+                m."photo_url" AS "requesterPhotoUrl",
+                m."countryCode" AS "requesterCountryCode",
+                m."isOutsideIndia" AS "requesterIsOutsideIndia",
+                m.country AS "requesterCountry",
+                m.state AS "requesterState",
+                m.city AS "requesterCity"
+             FROM relationship_requests r
+             JOIN members m ON r.requester_id = m.id
+             WHERE r.target_id = $1 AND r.status = 'PENDING'
+             ORDER BY r.created_at DESC`,
+            [memberId],
+          ),
+        ]);
 
         member.pendingOutgoingRequests = pendingOutgoing.rows;
         member.pendingIncomingRequests = pendingIncoming.rows;
@@ -1680,44 +1724,33 @@ function memberController(pool) {
     },
     async getMemberStats(request, response) {
       try {
-        const query = `
-          SELECT
-            COUNT(*) AS total_members,
-            COUNT(*) FILTER (
-              WHERE created_at >= date_trunc('month', NOW()) AND created_at <= NOW()
-            ) AS new_this_month,
-            (
-              SELECT COALESCE(json_agg(row_to_json(t)), '[]'::json)
-              FROM (
-                SELECT m.id, m."firstName", m."firstNameEnglish", m."middleName", m."middleNameEnglish", m."surname", m."surnameEnglish", m."mobileNumber", m."countryCode", m."isOutsideIndia", m.country, m.state, m.city, m.gender, m."dateOfBirth",
-                       CASE
-                         WHEN m."dateOfBirth" IS NULL OR TRIM(m."dateOfBirth") = '' THEN NULL
-                         WHEN TRIM(m."dateOfBirth") ~ '^[0-9]{2}-[0-9]{2}-[0-9]{4}$'
-                           THEN DATE_PART('year', AGE(CURRENT_DATE, TO_DATE(TRIM(m."dateOfBirth"), 'DD-MM-YYYY')))
-                         WHEN TRIM(m."dateOfBirth") ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
-                           THEN DATE_PART('year', AGE(CURRENT_DATE, TO_DATE(TRIM(m."dateOfBirth"), 'YYYY-MM-DD')))
-                         ELSE NULL
-                       END AS age,
-                       m."fatherId", m."sonIds", m.created_at,
-                       CONCAT(f."firstName", ' ',f."middleName", ' ',f."surname") AS "fatherName"
-                FROM members m
-                LEFT JOIN members f ON m."fatherId" = f.id
-                ORDER BY m.created_at DESC NULLS LAST, m.id DESC
-                LIMIT 3
-              ) t
-            ) AS last_three
-          FROM members
-        `;
+        const [countsResult, lastThreeResult] = await Promise.all([
+          pool.query(`
+            SELECT
+              COUNT(*) AS total_members,
+              COUNT(*) FILTER (
+                WHERE created_at >= date_trunc('month', NOW()) AND created_at <= NOW()
+              ) AS new_this_month
+            FROM members
+          `),
+          pool.query(`
+            SELECT m.id, m."firstName", m."firstNameEnglish", m."middleName", m."middleNameEnglish", m."surname", m."surnameEnglish", m."mobileNumber", m."countryCode", m."isOutsideIndia", m.country, m.state, m.city, m.gender, m."dateOfBirth",
+                   m."fatherId", m."sonIds", m.created_at,
+                   CONCAT(f."firstName", ' ',f."middleName", ' ',f."surname") AS "fatherName"
+            FROM members m
+            LEFT JOIN members f ON m."fatherId" = f.id
+            ORDER BY m.created_at DESC NULLS LAST, m.id DESC
+            LIMIT 3
+          `),
+        ]);
 
-        const result = await pool.query(query);
-        const row = result.rows[0] || {
+        const countsRow = countsResult.rows[0] || {
           total_members: "0",
           new_this_month: "0",
-          last_three: [],
         };
 
         // Enrich last three members with sons names
-        const lastThreeMembers = (row.last_three || []).map(withComputedAge);
+        const lastThreeMembers = lastThreeResult.rows.map(withComputedAge);
         await enrichMembersWithSonsNames(lastThreeMembers, pool);
 
         return sendSuccess(
@@ -1725,8 +1758,8 @@ function memberController(pool) {
           200,
           "Member statistics fetched successfully",
           {
-            totalMembers: Number(row.total_members) || 0,
-            newMembersThisMonth: Number(row.new_this_month) || 0,
+            totalMembers: Number(countsRow.total_members) || 0,
+            newMembersThisMonth: Number(countsRow.new_this_month) || 0,
             lastThreeMembers: lastThreeMembers,
           },
         );
@@ -1832,8 +1865,10 @@ function memberController(pool) {
         }
 
         // Enrich with sons names
-        await enrichMembersWithSonsNames(groupedMembers.male, pool);
-        await enrichMembersWithSonsNames(groupedMembers.female, pool);
+        await enrichMembersWithSonsNames(
+          [...groupedMembers.male, ...groupedMembers.female],
+          pool,
+        );
 
         return sendSuccess(
           response,

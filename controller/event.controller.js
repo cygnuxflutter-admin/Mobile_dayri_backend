@@ -19,7 +19,7 @@ const storage = multer.diskStorage({
 
 const eventUpload = multer({
   storage,
-  limits: { fileSize: 1024 * 1024 * 1024 },
+  limits: { fileSize: 50 * 1024 * 1024 },
 });
 
 const createEventsTable = `
@@ -59,6 +59,11 @@ async function ensureEventsTable(pool) {
     UPDATE events
     SET video_links = jsonb_build_array(video_link)
     WHERE video_link IS NOT NULL AND video_links IS NULL
+  `);
+  // Performance indexes
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_events_date_created
+      ON events (event_date DESC, created_at DESC);
   `);
 }
 
@@ -172,6 +177,7 @@ function storedMediaUrls(event, pluralField, singularField) {
 }
 
 function removeEventFiles(urls) {
+  if (!Array.isArray(urls) || urls.length === 0) return;
   for (const url of urls) {
     const normalizedUrl = normalizeMediaUrl(url);
     if (!normalizedUrl.startsWith("/uploads/events/")) continue;
@@ -180,11 +186,11 @@ function removeEventFiles(urls) {
       "..",
       normalizedUrl.replace(/^\//, ""),
     );
-    try {
-      if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
-    } catch (error) {
-      console.error("Failed to remove event file:", error.message);
-    }
+    fs.promises.unlink(filePath).catch((error) => {
+      if (error.code !== "ENOENT") {
+        console.error("Failed to remove event file:", error.message);
+      }
+    });
   }
 }
 

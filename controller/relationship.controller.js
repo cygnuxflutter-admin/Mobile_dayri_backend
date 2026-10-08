@@ -23,6 +23,12 @@ const createRelationshipRequestsTable = `
 
   CREATE INDEX IF NOT EXISTS idx_rel_req_requester_status 
   ON relationship_requests (requester_id, status);
+
+  CREATE INDEX IF NOT EXISTS idx_rel_req_target_status_created
+  ON relationship_requests (target_id, status, created_at DESC);
+
+  CREATE INDEX IF NOT EXISTS idx_rel_req_requester_status_created
+  ON relationship_requests (requester_id, status, created_at DESC);
 `;
 
 async function ensureRelationshipRequestsTable(pool) {

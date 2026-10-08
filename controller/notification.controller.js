@@ -136,6 +136,11 @@ async function ensureNotificationsTable(pool) {
   await pool.query(createNotificationsTable);
   // ensure column to store multiple photo URLs exists
   await pool.query(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS photo_urls JSONB`);
+  // Performance indexes
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS idx_notifications_active_created
+      ON notifications (is_active, created_at DESC);
+  `);
 }
 
 async function ensureUserNotificationsTable(pool) {
