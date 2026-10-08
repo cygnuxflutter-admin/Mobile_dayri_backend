@@ -45,11 +45,6 @@ async function ensureEmergencyContactsTable(pool) {
     ADD COLUMN IF NOT EXISTS is_active BOOLEAN DEFAULT TRUE,
     ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()
   `);
-
-  await pool.query(`
-    CREATE INDEX IF NOT EXISTS idx_emergency_contacts_active_name
-      ON emergency_contacts (is_active DESC, name ASC, id ASC);
-  `);
 }
 
 function parseEmergencyContactId(request, response) {

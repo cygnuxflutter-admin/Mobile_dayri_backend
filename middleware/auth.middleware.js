@@ -19,10 +19,7 @@ function authMiddleware(pool) {
 
     try {
       const result = await pool.query(
-        `SELECT id, role, "isActive", "isApproved", "isDeleted",
-                "firstName", "middleName", surname, "surnameEnglish",
-                "mobileNumber", "countryCode", "fatherId", "sonIds"
-         FROM members
+        `SELECT * FROM members
          WHERE id = $1 AND COALESCE("isDeleted", false) = false
          LIMIT 1`,
         [decoded.memberId],
