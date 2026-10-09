@@ -5,6 +5,7 @@ const { createEventRoutes } = require("./event.route");
 const { createReportRoutes } = require("./report.route");
 const { createEmergencyContactRoutes } = require("./emergencyContact.route");
 const { createRelationshipRoutes } = require("./relationship.route");
+const { createUploadRoutes } = require("./upload.route");
 const {
   ensureMembersTable,
 } = require("../controller/member.controller");
@@ -18,6 +19,9 @@ const {
 const {
   ensureRelationshipRequestsTable,
 } = require("../controller/relationship.controller");
+const {
+  ensureVideoUploadsTable,
+} = require("../controller/videoUpload.controller");
 
 function createApiRoutes(pool) {
   const router = Router();
@@ -30,6 +34,7 @@ function createApiRoutes(pool) {
   router.use("/relationship", createRelationshipRoutes(pool));
   router.use("/notification", createNotificationRoutes(pool));
   router.use("/event", createEventRoutes(pool));
+  router.use("/upload", createUploadRoutes(pool));
   router.use("/report", createReportRoutes(pool));
   router.use(
     "/emergencyContact",
@@ -49,5 +54,6 @@ module.exports = {
   ensureEventsTable,
   ensureEmergencyContactsTable,
   ensureRelationshipRequestsTable,
+  ensureVideoUploadsTable,
 };
 

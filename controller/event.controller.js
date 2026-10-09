@@ -2,6 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const multer = require("multer");
 const { sendSuccess } = require("../utils/response");
+const { videoUploadController } = require("./videoUpload.controller");
 
 const uploadDir = path.join(__dirname, "..", "uploads", "events");
 if (!fs.existsSync(uploadDir)) {
@@ -82,7 +83,7 @@ function isVideoFile(file) {
   );
 }
 
-function buildEventPayload(body, files) {
+function buildEventPayload(body, files, uploadSessionVideoUrl = null) {
   const fileList = normalizeFilesInput(files);
   const imageUrls = fileList
     .filter(
@@ -91,9 +92,13 @@ function buildEventPayload(body, files) {
         (file.mimetype?.startsWith("image/") || Boolean(file.filename)),
     )
     .map((file) => `/uploads/events/${file.filename}`);
-  const videoUrls = fileList
+  const uploadedVideoUrls = fileList
     .filter(isVideoFile)
     .map((file) => `/uploads/events/${file.filename}`);
+
+  const bodyVideoUrls = parseMediaUrls(
+    body.video_urls ?? body.videoUrls ?? body.video_url ?? body.videoUrl
+  );
 
   const coverUrl = body.image_url || body.imageUrl;
   if (coverUrl && imageUrls.length > 0) {
@@ -105,13 +110,30 @@ function buildEventPayload(body, files) {
     }
   }
 
+  // Combine video URLs from uploaded files, body fields, and upload session (preserving order)
+  const allVideoUrls = [
+    ...uploadedVideoUrls,
+    ...bodyVideoUrls.map(normalizeMediaUrl).filter(Boolean),
+    ...(uploadSessionVideoUrl ? [normalizeMediaUrl(uploadSessionVideoUrl)] : []),
+  ];
+
+  const uniqueVideoUrls = Array.from(new Set(allVideoUrls));
+
+  const primaryVideoUrl =
+    uniqueVideoUrls[0] ||
+    (body.video_url || body.videoUrl
+      ? normalizeMediaUrl(body.video_url || body.videoUrl)
+      : uploadSessionVideoUrl
+        ? normalizeMediaUrl(uploadSessionVideoUrl)
+        : null);
+
   return {
     name: body.name?.trim() || null,
     eventDate: body.event_date || body.eventDate || null,
     imageUrl: imageUrls[0] || (coverUrl ? normalizeMediaUrl(coverUrl) : null),
     imageUrls: imageUrls.length > 0 ? imageUrls : null,
-    videoUrl: videoUrls[0] || null,
-    videoUrls: videoUrls.length > 0 ? videoUrls : null,
+    videoUrl: primaryVideoUrl,
+    videoUrls: uniqueVideoUrls.length > 0 ? uniqueVideoUrls : null,
     videoLinks: normalizeVideoLinks(
       body.video_links ?? body.videoLinks ?? body.video_link ?? body.videoLink,
     ),
@@ -232,10 +254,34 @@ function validateEvent(payload) {
 }
 
 function eventController(pool) {
+  const uploadCtrl = videoUploadController(pool);
+
   return {
     eventUpload,
+    initUpload: uploadCtrl.initUpload,
+    uploadChunk: uploadCtrl.uploadChunk,
+    getUploadStatus: uploadCtrl.getUploadStatus,
+    completeUpload: uploadCtrl.completeUpload,
+    cancelUpload: uploadCtrl.cancelUpload,
+
     async addEvent(request, response) {
-      const payload = buildEventPayload(request.body, request.files);
+      let uploadSessionVideoUrl = null;
+      const uploadId = request.body.upload_id || request.body.uploadId;
+      if (uploadId) {
+        try {
+          const sessionRes = await pool.query(
+            `SELECT final_file_url, status FROM video_upload_sessions WHERE id = $1 LIMIT 1`,
+            [uploadId]
+          );
+          if (sessionRes.rowCount > 0 && sessionRes.rows[0].status === 'completed') {
+            uploadSessionVideoUrl = sessionRes.rows[0].final_file_url;
+          }
+        } catch (dbErr) {
+          console.error("Failed to query upload session:", dbErr.message);
+        }
+      }
+
+      const payload = buildEventPayload(request.body, request.files, uploadSessionVideoUrl);
       const validationError = validateEvent(payload);
 
       console.log(validationError, "validationError");
@@ -362,9 +408,26 @@ function eventController(pool) {
         }
 
         const existingEvent = existingResult.rows[0];
+        let uploadSessionVideoUrl = null;
+        const uploadId = request.body.upload_id || request.body.uploadId;
+        if (uploadId) {
+          try {
+            const sessionRes = await pool.query(
+              `SELECT final_file_url, status FROM video_upload_sessions WHERE id = $1 LIMIT 1`,
+              [uploadId]
+            );
+            if (sessionRes.rowCount > 0 && sessionRes.rows[0].status === 'completed') {
+              uploadSessionVideoUrl = sessionRes.rows[0].final_file_url;
+            }
+          } catch (dbErr) {
+            console.error("Failed to query upload session:", dbErr.message);
+          }
+        }
+
         const uploadedPayload = buildEventPayload(
           request.body,
           request.files,
+          uploadSessionVideoUrl,
         );
         const imageUrls = storedMediaUrls(
           existingEvent,
@@ -500,4 +563,4 @@ function eventController(pool) {
   };
 }
 
-module.exports = { eventController, ensureEventsTable };
+module.exports = { eventController, ensureEventsTable, buildEventPayload, validateEvent };
