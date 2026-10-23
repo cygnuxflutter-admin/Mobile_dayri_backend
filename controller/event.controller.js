@@ -233,6 +233,7 @@ function validateEvent(payload) {
   const day = Number(match[1]);
   const month = Number(match[2]);
   const year = Number(match[3]);
+  //
 
   // Validate actual calendar date
   const date = new Date(year, month - 1, day);
