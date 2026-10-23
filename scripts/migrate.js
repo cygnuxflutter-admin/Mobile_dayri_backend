@@ -13,14 +13,20 @@ async function runMigration() {
     ssl: false,
   });
 
-  const sqlPath = path.join(__dirname, '..', 'migrations', '001_create_video_upload_tables.sql');
-  const sql = fs.readFileSync(sqlPath, 'utf8');
+  const migrationsDir = path.join(__dirname, '..', 'migrations');
+  const files = fs.readdirSync(migrationsDir)
+    .filter((file) => file.endsWith('.sql'))
+    .sort();
 
-  console.log('Running migration 001_create_video_upload_tables.sql...');
   const client = await pool.connect();
   try {
-    await client.query(sql);
-    console.log('Migration completed successfully.');
+    for (const file of files) {
+      const sqlPath = path.join(migrationsDir, file);
+      const sql = fs.readFileSync(sqlPath, 'utf8');
+      console.log(`Running migration ${file}...`);
+      await client.query(sql);
+      console.log(`Migration ${file} completed successfully.`);
+    }
   } catch (err) {
     console.error('Migration failed:', err);
     process.exit(1);

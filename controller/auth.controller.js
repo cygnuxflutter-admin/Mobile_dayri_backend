@@ -73,6 +73,9 @@ function memberResponse(member) {
     surname: member.surname,
     surnameEnglish: member.surnameEnglish,
     mobileNumber: member.mobileNumber,
+    secondaryMobileNumber:
+      member.secondaryMobileNumber ?? member.secondarymobilenumber ?? null,
+    email: member.email ?? null,
     countryCode: member.countryCode,
     isOutsideIndia: member.isOutsideIndia,
     country: member.country,

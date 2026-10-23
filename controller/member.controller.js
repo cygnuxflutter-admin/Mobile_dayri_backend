@@ -34,6 +34,8 @@ const memberFields = [
   "surname",
   "surnameEnglish",
   "mobileNumber",
+  "secondaryMobileNumber",
+  "email",
   "countryCode",
   "isOutsideIndia",
   "country",
@@ -67,6 +69,8 @@ const requiredMemberFields = [
 
 const insertMemberFields = [
   ...requiredMemberFields.filter((field) => field !== "fcmToken"),
+  "secondaryMobileNumber",
+  "email",
   "sonIds",
   "fatherId",
 ];
@@ -81,6 +85,8 @@ const createMembersTable = `
     surname TEXT NOT NULL,
     "surnameEnglish" TEXT NOT NULL,
     "mobileNumber" TEXT NOT NULL,
+    "secondaryMobileNumber" VARCHAR(25) NULL DEFAULT NULL,
+    "email" VARCHAR(150) NULL DEFAULT NULL,
     "countryCode" TEXT NOT NULL DEFAULT '+91',
     gender TEXT NOT NULL,
     "dateOfBirth" TEXT NOT NULL,
@@ -109,6 +115,25 @@ const createMembersTable = `
 
 function normalizeMobileNumber(value) {
   return String(value || "").replace(/[\s()-]/g, "");
+}
+
+function normalizeSecondaryMobileNumber(value) {
+  if (value === undefined || value === null) return null;
+  const raw = String(value).trim();
+  if (!raw) return null;
+  const cleaned = raw.replace(/[\s()-]/g, "");
+  if (!cleaned) return null;
+  if (!cleaned.startsWith("+") && /^\d+$/.test(cleaned)) {
+    return `+${cleaned}`;
+  }
+  return cleaned;
+}
+
+function normalizeEmail(value) {
+  if (value === undefined || value === null) return null;
+  const raw = String(value).trim();
+  if (!raw) return null;
+  return raw.toLowerCase();
 }
 
 function normalizeBoolean(value, defaultValue = false) {
@@ -180,6 +205,9 @@ function withComputedAge(member) {
 
   return {
     ...member,
+    secondaryMobileNumber:
+      member.secondaryMobileNumber ?? member.secondarymobilenumber ?? null,
+    email: member.email ?? null,
     age: calculateAgeFromDob(member.dateOfBirth ?? member.DateOfBirth),
   };
 }
@@ -212,6 +240,11 @@ function buildRegistrationPayload(body, file) {
         : Number(sanitizedBody.fatherId),
     sonIds: sonIds.length > 0 ? sonIds : null,
     mobileNumber: normalizeMobileNumber(sanitizedBody?.mobileNumber),
+    secondaryMobileNumber: normalizeSecondaryMobileNumber(
+      sanitizedBody?.secondaryMobileNumber ??
+        sanitizedBody?.secondary_mobile_number,
+    ),
+    email: normalizeEmail(sanitizedBody?.email),
     photoUrl: file ? `/uploads/members/${file.filename}` : null,
   };
 }
@@ -249,6 +282,8 @@ async function ensureMembersTable(pool) {
     ADD COLUMN IF NOT EXISTS surname TEXT,
     ADD COLUMN IF NOT EXISTS "surnameEnglish" TEXT,
     ADD COLUMN IF NOT EXISTS "mobileNumber" TEXT,
+    ADD COLUMN IF NOT EXISTS "secondaryMobileNumber" VARCHAR(25) NULL DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS "email" VARCHAR(150) NULL DEFAULT NULL,
     ADD COLUMN IF NOT EXISTS "countryCode" TEXT NOT NULL DEFAULT '+91',
     ADD COLUMN IF NOT EXISTS gender TEXT,
     ADD COLUMN IF NOT EXISTS "dateOfBirth" TEXT,
@@ -293,6 +328,70 @@ async function ensureMembersTable(pool) {
     ADD CONSTRAINT members_role_check CHECK ("role" IN ('USER', 'ADMIN', 'SUPERADMIN'));
   `);
 
+  // Cleanup relationships pointing to deleted members
+  await pool.query(`
+    UPDATE members
+    SET "fatherId" = NULL, "updated_at" = NOW()
+    WHERE "fatherId" IN (
+      SELECT id FROM members WHERE COALESCE("isDeleted", false) = true
+    );
+  `);
+  await pool.query(`
+    UPDATE members m
+    SET "sonIds" = (
+      SELECT COALESCE(array_agg(s.id), NULL)
+      FROM unnest(m."sonIds") AS s(id)
+      JOIN members sm ON sm.id = s.id
+      WHERE COALESCE(sm."isDeleted", false) = false
+    ),
+    "updated_at" = NOW()
+    WHERE m."sonIds" IS NOT NULL
+      AND EXISTS (
+        SELECT 1
+        FROM unnest(m."sonIds") AS s(id)
+        JOIN members sm ON sm.id = s.id
+        WHERE COALESCE(sm."isDeleted", false) = true
+      );
+  `);
+  await pool.query(`
+    UPDATE relationship_requests
+    SET status = 'CANCELLED', updated_at = NOW()
+    WHERE status = 'PENDING'
+      AND (
+        requester_id IN (SELECT id FROM members WHERE COALESCE("isDeleted", false) = true)
+        OR target_id IN (SELECT id FROM members WHERE COALESCE("isDeleted", false) = true)
+      );
+  `);
+
+  // Migrate any one-way father relationships to pending requests (Option 2)
+  try {
+    const oneWayFathers = await pool.query(`
+      SELECT m.id AS "sonId", m."fatherId"
+      FROM members m
+      JOIN members f ON m."fatherId" = f.id
+      WHERE m."fatherId" IS NOT NULL
+        AND COALESCE(m."isDeleted", false) = false
+        AND COALESCE(f."isDeleted", false) = false
+        AND (f."sonIds" IS NULL OR NOT (m.id = ANY(f."sonIds")))
+    `);
+
+    for (const row of oneWayFathers.rows) {
+      await pool.query(
+        `INSERT INTO relationship_requests (requester_id, target_id, relationship_type, status)
+         VALUES ($1, $2, 'FATHER', 'PENDING')
+         ON CONFLICT (requester_id, target_id, relationship_type) WHERE status = 'PENDING'
+         DO NOTHING`,
+        [row.sonId, row.fatherId],
+      );
+      await pool.query(
+        `UPDATE members SET "fatherId" = NULL, "updated_at" = NOW() WHERE id = $1`,
+        [row.sonId],
+      );
+    }
+  } catch (migErr) {
+    console.warn("Notice: relationship migration skipped:", migErr.message);
+  }
+
   if (result.rows[0].exists) {
     console.log("Members table already exists");
   }
@@ -331,6 +430,26 @@ function validateMember(member) {
   }
   if (!/^\d{10}$/.test(member.mobileNumber)) {
     return { error: "mobileNumber must be a valid 10-digit number" };
+  }
+  if (
+    member.secondaryMobileNumber !== undefined &&
+    member.secondaryMobileNumber !== null
+  ) {
+    if (!/^\+\d{7,15}$/.test(member.secondaryMobileNumber)) {
+      return {
+        error:
+          "secondaryMobileNumber must be a valid mobile number with country code (e.g. +911234567890)",
+      };
+    }
+  }
+  if (member.email !== undefined && member.email !== null) {
+    if (member.email.length > 150) {
+      return { error: "email exceeds maximum length of 150 characters" };
+    }
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(member.email)) {
+      return { error: "email must be a valid email address" };
+    }
   }
   console.log("Validating member:", member.fatherId);
   // if (
@@ -374,6 +493,32 @@ function validateMemberUpdate(member) {
     !/^\+\d{1,4}$/.test(member.countryCode)
   ) {
     return { error: "countryCode must be a valid dialing code, such as +91" };
+  }
+  if (
+    member.mobileNumber !== undefined &&
+    !/^\d{10}$/.test(member.mobileNumber)
+  ) {
+    return { error: "mobileNumber must be a valid 10-digit number" };
+  }
+  if (
+    member.secondaryMobileNumber !== undefined &&
+    member.secondaryMobileNumber !== null
+  ) {
+    if (!/^\+\d{7,15}$/.test(member.secondaryMobileNumber)) {
+      return {
+        error:
+          "secondaryMobileNumber must be a valid mobile number with country code (e.g. +911234567890)",
+      };
+    }
+  }
+  if (member.email !== undefined && member.email !== null) {
+    if (member.email.length > 150) {
+      return { error: "email exceeds maximum length of 150 characters" };
+    }
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(member.email)) {
+      return { error: "email must be a valid email address" };
+    }
   }
   if (
     member.isOutsideIndia !== undefined &&
@@ -469,6 +614,36 @@ async function enrichMembersWithSonsNames(members, pool) {
   return members;
 }
 
+async function cleanupDeletedMemberRelationships(pool, memberId) {
+  try {
+    await pool.query(
+      `UPDATE members
+       SET "fatherId" = NULL, "updated_at" = NOW()
+       WHERE "fatherId" = $1`,
+      [memberId],
+    );
+
+    await pool.query(
+      `UPDATE members
+       SET "sonIds" = array_remove("sonIds", $1::bigint), "updated_at" = NOW()
+       WHERE $1::bigint = ANY("sonIds")`,
+      [memberId],
+    );
+
+    await pool.query(
+      `UPDATE relationship_requests
+       SET status = 'CANCELLED', updated_at = NOW()
+       WHERE (requester_id = $1 OR target_id = $1) AND status = 'PENDING'`,
+      [memberId],
+    );
+  } catch (error) {
+    console.error(
+      "Failed to cleanup relationships for deleted member:",
+      error.message,
+    );
+  }
+}
+
 async function handleRelationshipUpdate(
   pool,
   memberId,
@@ -513,26 +688,43 @@ async function handleRelationshipUpdate(
       } else {
         // Approval-based: Do NOT set fatherId on member immediately
         delete updateData.fatherId;
-        const reqRecord = await processRelationshipRequest(
-          pool,
-          memberId,
-          requestedFatherId,
-          "FATHER",
+        // Defensive check: only send request if target exists and is not deleted
+        const fatherCheck = await pool.query(
+          `SELECT id FROM members WHERE id = $1 AND COALESCE("isDeleted", false) = false LIMIT 1`,
+          [requestedFatherId],
         );
-        pendingRequestsCreated.push({
-          type: "FATHER",
-          targetId: requestedFatherId,
-          requestId: reqRecord.id,
-        });
+        if (fatherCheck.rowCount > 0) {
+          const reqRecord = await processRelationshipRequest(
+            pool,
+            memberId,
+            requestedFatherId,
+            "FATHER",
+          );
+          pendingRequestsCreated.push({
+            type: "FATHER",
+            targetId: requestedFatherId,
+            requestId: reqRecord.id,
+          });
+        }
       }
     }
   }
 
   // 2. Son handling
   if (updateData.sonIds !== undefined) {
-    const requestedSonIds = Array.isArray(updateData.sonIds)
+    const rawSonIds = Array.isArray(updateData.sonIds)
       ? updateData.sonIds.map(Number).filter(Number.isInteger)
       : [];
+
+    // Defensive check: filter out any requested sons that are deleted
+    let requestedSonIds = rawSonIds;
+    if (rawSonIds.length > 0) {
+      const activeSonsResult = await pool.query(
+        `SELECT id FROM members WHERE id = ANY($1::bigint[]) AND COALESCE("isDeleted", false) = false`,
+        [rawSonIds],
+      );
+      requestedSonIds = activeSonsResult.rows.map((r) => Number(r.id));
+    }
 
     // A) Removed sons (was in existing, but not in requested) -> immediate unlinking
     const removedSons = existingSonIds.filter(
@@ -589,7 +781,7 @@ async function updateRelationshipsDirectly(
     : [];
 
   if (updateData.fatherId !== undefined) {
-    const fatherId =
+    let fatherId =
       updateData.fatherId === null ? null : Number(updateData.fatherId);
 
     if (fatherId === memberId) {
@@ -604,7 +796,7 @@ async function updateRelationshipsDirectly(
         [fatherId],
       );
       if (fatherResult.rowCount === 0) {
-        throw new Error("fatherId does not reference an existing member");
+        fatherId = null; // Do not throw; treat as null if deleted
       }
     }
 
@@ -756,14 +948,52 @@ function memberController(pool) {
 
         const passwordHash = await bcrypt.hash(password, 12);
         await syncMemberSequence(client);
+
+        const requestedFatherId = payload.fatherId
+          ? Number(payload.fatherId)
+          : null;
+        const requestedSonIds = Array.isArray(payload.sonIds)
+          ? payload.sonIds
+              .map(Number)
+              .filter((id) => Number.isInteger(id) && id > 0)
+          : null;
+
+        // Verify requested father exists and is not deleted if provided
+        if (requestedFatherId) {
+          const fatherCheck = await client.query(
+            `SELECT id FROM members WHERE id = $1 AND COALESCE("isDeleted", false) = false LIMIT 1`,
+            [requestedFatherId],
+          );
+          if (fatherCheck.rowCount === 0) {
+            await client.query("ROLLBACK");
+            return response.status(400).json({
+              error: "fatherId does not reference an existing member",
+            });
+          }
+        }
+
+        // Verify requested sons exist and are not deleted if provided
+        if (requestedSonIds && requestedSonIds.length > 0) {
+          const sonCheck = await client.query(
+            `SELECT id FROM members WHERE id = ANY($1::bigint[]) AND COALESCE("isDeleted", false) = false`,
+            [requestedSonIds],
+          );
+          if (sonCheck.rowCount !== requestedSonIds.length) {
+            await client.query("ROLLBACK");
+            return response.status(400).json({
+              error: "One or more sonIds do not reference an existing member",
+            });
+          }
+        }
+
         const memberResult = await client.query(
           `INSERT INTO members (
               "firstName", "firstNameEnglish", "middleName", "middleNameEnglish",
-              surname, "surnameEnglish", "mobileNumber", "countryCode", "passwordHash", gender,
+              surname, "surnameEnglish", "mobileNumber", "secondaryMobileNumber", "email", "countryCode", "passwordHash", gender,
               "dateOfBirth", "isOutsideIndia", country, state, city,
               "currentAddress", "latlng", "sonIds", "fatherId",
               "photo_url", "created_at", "isPasswordChange"
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, NOW(), $21)
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, NOW(), $23)
             RETURNING *`,
           [
             payload.firstName,
@@ -773,6 +1003,8 @@ function memberController(pool) {
             payload.surname,
             payload.surnameEnglish,
             payload.mobileNumber,
+            payload.secondaryMobileNumber,
+            payload.email,
             payload.countryCode,
             passwordHash,
             payload.gender,
@@ -783,8 +1015,8 @@ function memberController(pool) {
             payload.city,
             payload.currentAddress,
             payload.latlng,
-            payload.sonIds,
-            payload.fatherId,
+            null, // Option 2: sonIds is null until approved
+            null, // Option 2: fatherId is null until approved
             payload.photoUrl,
             shouldSetPasswordChange,
           ],
@@ -792,6 +1024,42 @@ function memberController(pool) {
         await client.query("COMMIT");
 
         const member = memberResult.rows[0];
+
+        // Option 2: Send pending relationship requests for father and sons
+        if (requestedFatherId) {
+          try {
+            await processRelationshipRequest(
+              pool,
+              member.id,
+              requestedFatherId,
+              "FATHER",
+            );
+          } catch (reqErr) {
+            console.error(
+              "Failed to process father relationship request on register:",
+              reqErr.message,
+            );
+          }
+        }
+
+        if (requestedSonIds && requestedSonIds.length > 0) {
+          for (const sonId of requestedSonIds) {
+            try {
+              await processRelationshipRequest(
+                pool,
+                member.id,
+                sonId,
+                "SON",
+              );
+            } catch (reqErr) {
+              console.error(
+                `Failed to process son relationship request for ${sonId} on register:`,
+                reqErr.message,
+              );
+            }
+          }
+        }
+
         return sendSuccess(response, 200, "Register Successfully", {
           member: memberResponse(member),
           token: generateToken(member),
@@ -1689,7 +1957,7 @@ function memberController(pool) {
             (
               SELECT COALESCE(json_agg(row_to_json(t)), '[]'::json)
               FROM (
-                SELECT m.id, m."firstName", m."firstNameEnglish", m."middleName", m."middleNameEnglish", m."surname", m."surnameEnglish", m."mobileNumber", m."countryCode", m."isOutsideIndia", m.country, m.state, m.city, m.gender, m."dateOfBirth",
+                SELECT m.id, m."firstName", m."firstNameEnglish", m."middleName", m."middleNameEnglish", m."surname", m."surnameEnglish", m."mobileNumber", m."secondaryMobileNumber", m.email, m."countryCode", m."isOutsideIndia", m.country, m.state, m.city, m.gender, m."dateOfBirth",
                        CASE
                          WHEN m."dateOfBirth" IS NULL OR TRIM(m."dateOfBirth") = '' THEN NULL
                          WHEN TRIM(m."dateOfBirth") ~ '^[0-9]{2}-[0-9]{2}-[0-9]{4}$'
@@ -1997,6 +2265,8 @@ function memberController(pool) {
           [request.member?.id || null, memberId],
         );
 
+        await cleanupDeletedMemberRelationships(pool, memberId);
+
         return sendSuccess(response, 200, "Member deleted successfully", {
           id: result.rows[0].id,
           isDeleted: result.rows[0].isDeleted,
@@ -2032,6 +2302,8 @@ function memberController(pool) {
         if (result.rowCount === 0) {
           return response.status(404).json({ error: "Member not found" });
         }
+
+        await cleanupDeletedMemberRelationships(pool, memberId);
 
         return sendSuccess(response, 200, "Account deleted successfully", {
           id: result.rows[0].id,
@@ -2248,6 +2520,21 @@ function memberController(pool) {
           );
         }
 
+        if (
+          updateData.secondaryMobileNumber !== undefined ||
+          updateData.secondary_mobile_number !== undefined
+        ) {
+          updateData.secondaryMobileNumber = normalizeSecondaryMobileNumber(
+            updateData.secondaryMobileNumber ??
+              updateData.secondary_mobile_number,
+          );
+          delete updateData.secondary_mobile_number;
+        }
+
+        if (updateData.email !== undefined) {
+          updateData.email = normalizeEmail(updateData.email);
+        }
+
         // If photo is uploaded
         if (request.file) {
           updateData.photo_url = `/uploads/members/${request.file.filename}`;
@@ -2340,6 +2627,8 @@ function memberController(pool) {
           "surname",
           "surnameEnglish",
           "mobileNumber",
+          "secondaryMobileNumber",
+          "email",
           "countryCode",
           "isOutsideIndia",
           "country",
@@ -2571,6 +2860,21 @@ function memberController(pool) {
           );
         }
 
+        if (
+          updateData.secondaryMobileNumber !== undefined ||
+          updateData.secondary_mobile_number !== undefined
+        ) {
+          updateData.secondaryMobileNumber = normalizeSecondaryMobileNumber(
+            updateData.secondaryMobileNumber ??
+              updateData.secondary_mobile_number,
+          );
+          delete updateData.secondary_mobile_number;
+        }
+
+        if (updateData.email !== undefined) {
+          updateData.email = normalizeEmail(updateData.email);
+        }
+
         // If photo is uploaded
         if (request.file) {
           updateData.photo_url = `/uploads/members/${request.file.filename}`;
@@ -2663,6 +2967,8 @@ function memberController(pool) {
           "surname",
           "surnameEnglish",
           "mobileNumber",
+          "secondaryMobileNumber",
+          "email",
           "countryCode",
           "isOutsideIndia",
           "country",
