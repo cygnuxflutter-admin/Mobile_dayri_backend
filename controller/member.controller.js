@@ -8,7 +8,10 @@ const {
   memberResponse,
   calculateAgeFromDob,
 } = require("./auth.controller");
-const { processRelationshipRequest } = require("./relationship.controller");
+const {
+  processRelationshipRequest,
+  ensureRelationshipRequestsTable,
+} = require("./relationship.controller");
 
 const memberUploadDir = path.join(__dirname, "..", "uploads", "members");
 if (!fs.existsSync(memberUploadDir)) {
@@ -26,6 +29,37 @@ const memberRegistrationUpload = multer({
   limits: { fileSize: 5 * 1024 * 1024 },
 });
 
+function flexibleMemberPhotoUpload(request, response, next) {
+  const upload = memberRegistrationUpload.fields([
+    { name: "photo", maxCount: 1 },
+    { name: "profilePhoto", maxCount: 1 },
+    { name: "image", maxCount: 1 },
+    { name: "file", maxCount: 1 },
+    { name: "avatar", maxCount: 1 },
+  ]);
+
+  upload(request, response, (err) => {
+    if (err) {
+      if (err.code === "LIMIT_UNEXPECTED_FILE") {
+        console.warn(`[Upload] Warning: unexpected file field "${err.field}" ignored`);
+        return next();
+      }
+      return response.status(400).json({ error: err.message });
+    }
+
+    if (request.files) {
+      request.file =
+        request.files.photo?.[0] ||
+        request.files.profilePhoto?.[0] ||
+        request.files.image?.[0] ||
+        request.files.file?.[0] ||
+        request.files.avatar?.[0] ||
+        null;
+    }
+    next();
+  });
+}
+
 const memberFields = [
   "firstName",
   "firstNameEnglish",
@@ -36,6 +70,8 @@ const memberFields = [
   "mobileNumber",
   "secondaryMobileNumber",
   "email",
+  "business",
+  "status",
   "countryCode",
   "isOutsideIndia",
   "country",
@@ -71,6 +107,8 @@ const insertMemberFields = [
   ...requiredMemberFields.filter((field) => field !== "fcmToken"),
   "secondaryMobileNumber",
   "email",
+  "business",
+  "status",
   "sonIds",
   "fatherId",
 ];
@@ -87,6 +125,8 @@ const createMembersTable = `
     "mobileNumber" TEXT NOT NULL,
     "secondaryMobileNumber" VARCHAR(25) NULL DEFAULT NULL,
     "email" VARCHAR(150) NULL DEFAULT NULL,
+    "business" TEXT NULL DEFAULT NULL,
+    "status" TEXT NULL DEFAULT NULL,
     "countryCode" TEXT NOT NULL DEFAULT '+91',
     gender TEXT NOT NULL,
     "dateOfBirth" TEXT NOT NULL,
@@ -134,6 +174,18 @@ function normalizeEmail(value) {
   const raw = String(value).trim();
   if (!raw) return null;
   return raw.toLowerCase();
+}
+
+function normalizeBusiness(value) {
+  if (value === undefined || value === null) return null;
+  const raw = String(value).trim();
+  return raw || null;
+}
+
+function normalizeMaritalStatus(value) {
+  if (value === undefined || value === null) return null;
+  const raw = String(value).trim().toLowerCase();
+  return raw || null;
 }
 
 function normalizeBoolean(value, defaultValue = false) {
@@ -203,11 +255,16 @@ function normalizeSonIds(body) {
 function withComputedAge(member) {
   if (!member) return member;
 
+  const maritalStatus = member.status ?? member.maritalStatus ?? null;
+
   return {
     ...member,
     secondaryMobileNumber:
       member.secondaryMobileNumber ?? member.secondarymobilenumber ?? null,
     email: member.email ?? null,
+    business: member.business ?? null,
+    status: maritalStatus,
+    maritalStatus: maritalStatus,
     age: calculateAgeFromDob(member.dateOfBirth ?? member.DateOfBirth),
   };
 }
@@ -242,9 +299,21 @@ function buildRegistrationPayload(body, file) {
     mobileNumber: normalizeMobileNumber(sanitizedBody?.mobileNumber),
     secondaryMobileNumber: normalizeSecondaryMobileNumber(
       sanitizedBody?.secondaryMobileNumber ??
-        sanitizedBody?.secondary_mobile_number,
+        sanitizedBody?.secondary_mobile_number ??
+        sanitizedBody?.secondaryPhone ??
+        sanitizedBody?.secondary_phone ??
+        sanitizedBody?.mobile2,
     ),
     email: normalizeEmail(sanitizedBody?.email),
+    business: normalizeBusiness(
+      sanitizedBody?.business ?? sanitizedBody?.Business,
+    ),
+    status: normalizeMaritalStatus(
+      sanitizedBody?.status ??
+        sanitizedBody?.Status ??
+        sanitizedBody?.maritalStatus ??
+        sanitizedBody?.marital_status,
+    ),
     photoUrl: file ? `/uploads/members/${file.filename}` : null,
   };
 }
@@ -284,6 +353,8 @@ async function ensureMembersTable(pool) {
     ADD COLUMN IF NOT EXISTS "mobileNumber" TEXT,
     ADD COLUMN IF NOT EXISTS "secondaryMobileNumber" VARCHAR(25) NULL DEFAULT NULL,
     ADD COLUMN IF NOT EXISTS "email" VARCHAR(150) NULL DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS "business" TEXT NULL DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS "status" TEXT NULL DEFAULT NULL,
     ADD COLUMN IF NOT EXISTS "countryCode" TEXT NOT NULL DEFAULT '+91',
     ADD COLUMN IF NOT EXISTS gender TEXT,
     ADD COLUMN IF NOT EXISTS "dateOfBirth" TEXT,
@@ -353,6 +424,7 @@ async function ensureMembersTable(pool) {
         WHERE COALESCE(sm."isDeleted", false) = true
       );
   `);
+  await ensureRelationshipRequestsTable(pool);
   await pool.query(`
     UPDATE relationship_requests
     SET status = 'CANCELLED', updated_at = NOW()
@@ -451,6 +523,14 @@ function validateMember(member) {
       return { error: "email must be a valid email address" };
     }
   }
+  if (member.status !== undefined && member.status !== null) {
+    const normalizedStatus = String(member.status).trim().toLowerCase();
+    if (!["married", "unmarried"].includes(normalizedStatus)) {
+      return {
+        error: "status must be either 'married' or 'unmarried'",
+      };
+    }
+  }
   console.log("Validating member:", member.fatherId);
   // if (
   //   member.fatherId !== undefined &&
@@ -518,6 +598,14 @@ function validateMemberUpdate(member) {
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(member.email)) {
       return { error: "email must be a valid email address" };
+    }
+  }
+  if (member.status !== undefined && member.status !== null) {
+    const normalizedStatus = String(member.status).trim().toLowerCase();
+    if (!["married", "unmarried"].includes(normalizedStatus)) {
+      return {
+        error: "status must be either 'married' or 'unmarried'",
+      };
     }
   }
   if (
@@ -989,11 +1077,13 @@ function memberController(pool) {
         const memberResult = await client.query(
           `INSERT INTO members (
               "firstName", "firstNameEnglish", "middleName", "middleNameEnglish",
-              surname, "surnameEnglish", "mobileNumber", "secondaryMobileNumber", "email", "countryCode", "passwordHash", gender,
+              surname, "surnameEnglish", "mobileNumber", "secondaryMobileNumber", "email",
+              "business", "status",
+              "countryCode", "passwordHash", gender,
               "dateOfBirth", "isOutsideIndia", country, state, city,
               "currentAddress", "latlng", "sonIds", "fatherId",
               "photo_url", "created_at", "isPasswordChange"
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, NOW(), $23)
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, NOW(), $25)
             RETURNING *`,
           [
             payload.firstName,
@@ -1005,6 +1095,8 @@ function memberController(pool) {
             payload.mobileNumber,
             payload.secondaryMobileNumber,
             payload.email,
+            payload.business,
+            payload.status,
             payload.countryCode,
             passwordHash,
             payload.gender,
@@ -1366,10 +1458,10 @@ function memberController(pool) {
           data.rows,
         );
       } catch (error) {
-        console.error("Failed to send registration OTP:", error.message);
+        console.error("Failed to fetch pending approval members:", error.message);
         return response
           .status(500)
-          .json({ error: "Failed to send registration OTP" });
+          .json({ error: "Failed to fetch pending approval members" });
       }
     },
 
@@ -1426,10 +1518,10 @@ function memberController(pool) {
           responseData,
         );
       } catch (error) {
-        console.error("Failed to send registration OTP:", error.message);
+        console.error("Failed to fetch pending approval members:", error.message);
         return response
           .status(500)
-          .json({ error: "Failed to send registration OTP" });
+          .json({ error: "Failed to fetch pending approval members" });
       }
     },
 
@@ -1957,7 +2049,7 @@ function memberController(pool) {
             (
               SELECT COALESCE(json_agg(row_to_json(t)), '[]'::json)
               FROM (
-                SELECT m.id, m."firstName", m."firstNameEnglish", m."middleName", m."middleNameEnglish", m."surname", m."surnameEnglish", m."mobileNumber", m."secondaryMobileNumber", m.email, m."countryCode", m."isOutsideIndia", m.country, m.state, m.city, m.gender, m."dateOfBirth",
+                SELECT m.id, m."firstName", m."firstNameEnglish", m."middleName", m."middleNameEnglish", m."surname", m."surnameEnglish", m."mobileNumber", m."secondaryMobileNumber", m.email, m.business, m.status, m."countryCode", m."isOutsideIndia", m.country, m.state, m.city, m.gender, m."dateOfBirth",
                        CASE
                          WHEN m."dateOfBirth" IS NULL OR TRIM(m."dateOfBirth") = '' THEN NULL
                          WHEN TRIM(m."dateOfBirth") ~ '^[0-9]{2}-[0-9]{2}-[0-9]{4}$'
@@ -2535,6 +2627,33 @@ function memberController(pool) {
           updateData.email = normalizeEmail(updateData.email);
         }
 
+        if (
+          updateData.business !== undefined ||
+          updateData.Business !== undefined
+        ) {
+          updateData.business = normalizeBusiness(
+            updateData.business ?? updateData.Business,
+          );
+          delete updateData.Business;
+        }
+
+        if (
+          updateData.status !== undefined ||
+          updateData.Status !== undefined ||
+          updateData.maritalStatus !== undefined ||
+          updateData.marital_status !== undefined
+        ) {
+          updateData.status = normalizeMaritalStatus(
+            updateData.status ??
+              updateData.Status ??
+              updateData.maritalStatus ??
+              updateData.marital_status,
+          );
+          delete updateData.Status;
+          delete updateData.maritalStatus;
+          delete updateData.marital_status;
+        }
+
         // If photo is uploaded
         if (request.file) {
           updateData.photo_url = `/uploads/members/${request.file.filename}`;
@@ -2629,6 +2748,8 @@ function memberController(pool) {
           "mobileNumber",
           "secondaryMobileNumber",
           "email",
+          "business",
+          "status",
           "countryCode",
           "isOutsideIndia",
           "country",
@@ -2875,6 +2996,33 @@ function memberController(pool) {
           updateData.email = normalizeEmail(updateData.email);
         }
 
+        if (
+          updateData.business !== undefined ||
+          updateData.Business !== undefined
+        ) {
+          updateData.business = normalizeBusiness(
+            updateData.business ?? updateData.Business,
+          );
+          delete updateData.Business;
+        }
+
+        if (
+          updateData.status !== undefined ||
+          updateData.Status !== undefined ||
+          updateData.maritalStatus !== undefined ||
+          updateData.marital_status !== undefined
+        ) {
+          updateData.status = normalizeMaritalStatus(
+            updateData.status ??
+              updateData.Status ??
+              updateData.maritalStatus ??
+              updateData.marital_status,
+          );
+          delete updateData.Status;
+          delete updateData.maritalStatus;
+          delete updateData.marital_status;
+        }
+
         // If photo is uploaded
         if (request.file) {
           updateData.photo_url = `/uploads/members/${request.file.filename}`;
@@ -2969,6 +3117,8 @@ function memberController(pool) {
           "mobileNumber",
           "secondaryMobileNumber",
           "email",
+          "business",
+          "status",
           "countryCode",
           "isOutsideIndia",
           "country",
@@ -3106,6 +3256,7 @@ function memberController(pool) {
 module.exports = {
   memberController,
   memberRegistrationUpload,
+  flexibleMemberPhotoUpload,
 
   ensureMembersTable,
 };

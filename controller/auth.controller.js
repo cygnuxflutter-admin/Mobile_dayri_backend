@@ -70,12 +70,17 @@ function memberResponse(member) {
     id: member.id,
     firstName: member.firstName,
     firstNameEnglish: member.firstNameEnglish,
+    middleName: member.middleName ?? null,
+    middleNameEnglish: member.middleNameEnglish ?? null,
     surname: member.surname,
     surnameEnglish: member.surnameEnglish,
     mobileNumber: member.mobileNumber,
     secondaryMobileNumber:
       member.secondaryMobileNumber ?? member.secondarymobilenumber ?? null,
     email: member.email ?? null,
+    business: member.business ?? null,
+    status: member.status ?? null,
+    maritalStatus: member.status ?? null,
     countryCode: member.countryCode,
     isOutsideIndia: member.isOutsideIndia,
     country: member.country,
@@ -118,6 +123,7 @@ function authController(pool) {
         const result = await pool.query(
           `SELECT * FROM members
            WHERE "mobileNumber" = $1 AND "countryCode" = $2
+             AND COALESCE("isDeleted", false) = false
            LIMIT 1`,
           [normalizeMobileNumber(mobileNumber), countryCode],
         );
@@ -129,6 +135,12 @@ function authController(pool) {
         }
 
         const member = result.rows[0];
+
+        if (!member.passwordHash) {
+          return response.status(401).json({
+            error: "Password login is not configured for this member",
+          });
+        }
 
         if (!(await bcrypt.compare(String(password), member.passwordHash))) {
           return response
@@ -151,12 +163,6 @@ function authController(pool) {
         if (member.isApproved === false) {
           return response.status(403).json({
             error: "Account approval is required",
-          });
-        }
-
-        if (!member.passwordHash) {
-          return response.status(401).json({
-            error: "Password login is not configured for this member",
           });
         }
 

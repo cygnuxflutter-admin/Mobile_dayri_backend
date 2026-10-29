@@ -20,8 +20,8 @@ console.log("=== Running Option 2 (Pending Request on Register) & Delete Cleanup
               firstName: params[0],
               surname: params[4],
               mobileNumber: params[6],
-              fatherId: params[20],
-              sonIds: params[19],
+              fatherId: params[22],
+              sonIds: params[21],
               created_at: new Date(),
             },
           ],
@@ -118,8 +118,8 @@ console.log("=== Running Option 2 (Pending Request on Register) & Delete Cleanup
 
     assert.strictEqual(statusCode, 200, "Registration should succeed");
     // Under Option 2, new member should NOT have fatherId directly set
-    assert.strictEqual(insertedValues[20], null, "fatherId must be NULL in INSERT query (pending approval)");
-    assert.strictEqual(insertedValues[19], null, "sonIds must be NULL in INSERT query (pending approval)");
+    assert.strictEqual(insertedValues[22], null, "fatherId must be NULL in INSERT query (pending approval)");
+    assert.strictEqual(insertedValues[21], null, "sonIds must be NULL in INSERT query (pending approval)");
 
     // Relationship request must be created for target father (ID 2)
     assert.strictEqual(relationshipRequests.length, 1, "Must create 1 relationship request");

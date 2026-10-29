@@ -2,6 +2,7 @@ const { Router } = require("express");
 const {
   memberController,
   memberRegistrationUpload,
+  flexibleMemberPhotoUpload,
 } = require("../controller/member.controller");
 const { authController } = require("../controller/auth.controller");
 const {
@@ -20,14 +21,14 @@ function createMemberRoutes(pool) {
   // Registration routes
   router.post(
     "/register",
-    memberRegistrationUpload.single("photo"),
+    flexibleMemberPhotoUpload,
     controller.register,
   );
   router.post(
     "/addMember",
     authMiddleware(pool),
     bothAdminMiddleware(),
-    memberRegistrationUpload.single("photo"),
+    flexibleMemberPhotoUpload,
     controller.register,
   );
 
@@ -84,13 +85,13 @@ function createMemberRoutes(pool) {
   router.post(
     "/updateMember/:id",
     authMiddleware(pool),
-    memberRegistrationUpload.single("photo"),
+    flexibleMemberPhotoUpload,
     controller.updateMember,
   );
    router.post(
     "/updateProfile",
     authMiddleware(pool),
-    memberRegistrationUpload.single("photo"),
+    flexibleMemberPhotoUpload,
     controller.updateProfile,
   );
   router.get("/getMember/:id", authMiddleware(pool), controller.getMemberById);

@@ -17,17 +17,44 @@ const pool = new Pool({
   ssl:  false
 });
 
-app.use(express.json());
+// CORS middleware
 app.use((request, response, next) => {
-  response.on('finish', () => {
-    console.log("API URL:", request.originalUrl);
-    console.log("API Response:", response.body);
+  response.header("Access-Control-Allow-Origin", "*");
+  response.header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
+  response.header("Access-Control-Allow-Headers", "Origin, X-Requested-With, Content-Type, Accept, Authorization");
+  if (request.method === "OPTIONS") {
+    return response.sendStatus(200);
+  }
+  next();
+});
 
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+app.use((request, response, next) => {
+  const clientIp = request.ip || request.headers['x-forwarded-for'] || request.socket.remoteAddress;
+  console.log(`[${new Date().toISOString()}] ---> Incoming ${request.method} ${request.originalUrl} from ${clientIp}`);
+  response.on('finish', () => {
+    console.log(`[${new Date().toISOString()}] <--- Completed ${request.method} ${request.originalUrl} -> Status ${response.statusCode}`);
   });
   next();
 });
 app.use('/uploads', express.static('uploads'));
 app.use('/api/v1', createApiRoutes(pool));
+
+// Global error handler
+app.use((err, request, response, next) => {
+  console.error(`[${new Date().toISOString()}] Unhandled error on ${request.method} ${request.originalUrl}:`, err);
+  if (response.headersSent) {
+    return next(err);
+  }
+  const statusCode = err.status || err.statusCode || (err.name === "MulterError" ? 400 : 500);
+  response.status(statusCode).json({
+    success: false,
+    error: err.message || "Internal server error",
+    code: err.code || undefined,
+  });
+});
 
 
 startServer().catch((error) => {
@@ -51,8 +78,8 @@ async function startServer() {
   await ensureRelationshipRequestsTable(pool);
   await ensureVideoUploadsTable(pool);
   startUploadCleanupJob(pool);
-  const server = app.listen(port, () => {
-    console.log(`PostgreSQL API listening on port ${port}`);
+  const server = app.listen(port, '0.0.0.0', () => {
+    console.log(`PostgreSQL API listening on 0.0.0.0:${port}`);
   });
   server.requestTimeout = 30 * 60 * 1000;
 }
