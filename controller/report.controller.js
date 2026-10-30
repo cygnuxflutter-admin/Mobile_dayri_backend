@@ -40,8 +40,8 @@ function reportController(pool) {
         const genderRes = await pool.query(`
           SELECT
             COUNT(*)::int AS total,
-            COUNT(*) FILTER (WHERE LOWER(gender) = 'male')::int AS male,
-            COUNT(*) FILTER (WHERE LOWER(gender) = 'female')::int AS female
+            COUNT(*) FILTER (WHERE UPPER(TRIM(gender)) = 'MALE')::int AS male,
+            COUNT(*) FILTER (WHERE UPPER(TRIM(gender)) = 'FEMALE')::int AS female
           FROM members
         `);
 

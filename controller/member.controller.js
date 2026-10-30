@@ -131,7 +131,7 @@ const createMembersTable = `
     "business" TEXT NULL DEFAULT NULL,
     "status" TEXT NULL DEFAULT NULL,
     "countryCode" TEXT NOT NULL DEFAULT '+91',
-    gender TEXT NOT NULL,
+    gender TEXT NOT NULL CHECK (gender IN ('MALE', 'FEMALE')),
     "dateOfBirth" TEXT NOT NULL,
     "isOutsideIndia" BOOLEAN NOT NULL DEFAULT FALSE,
     country TEXT,
@@ -219,6 +219,14 @@ function normalizeCountryCode(value) {
   return /^\d{1,4}$/.test(digits) ? `+${digits}` : normalizedValue;
 }
 
+function normalizeGender(value) {
+  if (value === undefined || value === null) return null;
+  const raw = String(value).trim().toUpperCase();
+  if (raw === "MALE" || raw === "M") return "MALE";
+  if (raw === "FEMALE" || raw === "F") return "FEMALE";
+  return raw || null;
+}
+
 function parseRegistrationArray(value) {
   if (value === undefined || value === null || value === "") return [];
   if (Array.isArray(value)) return value.map(Number);
@@ -265,6 +273,7 @@ function withComputedAge(member) {
 
   return {
     ...member,
+    gender: member.gender ? String(member.gender).toUpperCase() : null,
     secondaryMobileNumber:
       member.secondaryMobileNumber ?? member.secondarymobilenumber ?? null,
     email: member.email ?? null,
@@ -323,6 +332,7 @@ function buildRegistrationPayload(body, file) {
         sanitizedBody?.maritalStatus ??
         sanitizedBody?.marital_status,
     ),
+    gender: normalizeGender(sanitizedBody?.gender),
     photoUrl: file ? `/uploads/members/${file.filename}` : null,
   };
 }
@@ -412,6 +422,15 @@ async function ensureMembersTable(pool) {
     ALTER TABLE members DROP CONSTRAINT IF EXISTS members_role_check;
     ALTER TABLE members
     ADD CONSTRAINT members_role_check CHECK ("role" IN ('USER', 'ADMIN', 'SUPERADMIN'));
+  `);
+  await pool.query(`
+    UPDATE members
+    SET gender = UPPER(TRIM(gender))
+    WHERE gender IS NOT NULL AND gender NOT IN ('MALE', 'FEMALE');
+
+    ALTER TABLE members DROP CONSTRAINT IF EXISTS members_gender_check;
+    ALTER TABLE members
+    ADD CONSTRAINT members_gender_check CHECK (gender IN ('MALE', 'FEMALE'));
   `);
 
   // Cleanup relationships pointing to deleted members
@@ -546,6 +565,9 @@ function validateMember(member) {
       };
     }
   }
+  if (!member.gender || !["MALE", "FEMALE"].includes(String(member.gender).toUpperCase().trim())) {
+    return { error: "gender must be either 'MALE' or 'FEMALE'" };
+  }
   console.log("Validating member:", member.fatherId);
   // if (
   //   member.fatherId !== undefined &&
@@ -622,6 +644,14 @@ function validateMemberUpdate(member) {
     if (!["married", "unmarried"].includes(normalizedStatus)) {
       return {
         error: "status must be either 'married' or 'unmarried'",
+      };
+    }
+  }
+  if (member.gender !== undefined && member.gender !== null) {
+    const normalizedGender = String(member.gender).trim().toUpperCase();
+    if (!["MALE", "FEMALE"].includes(normalizedGender)) {
+      return {
+        error: "gender must be either 'MALE' or 'FEMALE'",
       };
     }
   }
@@ -2758,6 +2788,10 @@ function memberController(pool) {
           delete updateData.marital_status;
         }
 
+        if (updateData.gender !== undefined) {
+          updateData.gender = normalizeGender(updateData.gender);
+        }
+
         // If photo is uploaded
         if (request.file) {
           updateData.photo_url = `/uploads/members/${request.file.filename}`;
@@ -3131,6 +3165,10 @@ function memberController(pool) {
           delete updateData.Status;
           delete updateData.maritalStatus;
           delete updateData.marital_status;
+        }
+
+        if (updateData.gender !== undefined) {
+          updateData.gender = normalizeGender(updateData.gender);
         }
 
         // If photo is uploaded
@@ -3532,7 +3570,11 @@ function memberController(pool) {
       }
 
       const countryCode = normalizeCountryCode(body.countryCode || "+91");
-      const gender = String(body.gender || "MALE").toUpperCase().trim();
+      const rawGender = normalizeGender(body.gender) || "MALE";
+      if (!["MALE", "FEMALE"].includes(rawGender)) {
+        return response.status(400).json({ error: "gender must be either 'MALE' or 'FEMALE'" });
+      }
+      const gender = rawGender;
       const dateOfBirth = String(
         body.dateOfBirth || body.DateOfBirth || "",
       ).trim();

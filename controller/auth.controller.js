@@ -89,7 +89,7 @@ function memberResponse(member) {
     role: member.role,
     age: calculateAgeFromDob(member.dateOfBirth),
     DateOfBirth: member.dateOfBirth,
-    gender: member.gender,
+    gender: member.gender ? String(member.gender).toUpperCase() : null,
     isActive: member.isActive,
     isApproved: member.isApproved,
     profilePhoto: member.photo_url,
