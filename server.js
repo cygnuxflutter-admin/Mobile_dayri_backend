@@ -1,4 +1,5 @@
 const path = require('path');
+const os = require('os');
 require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 const express = require('express');
@@ -79,7 +80,27 @@ async function startServer() {
   await ensureVideoUploadsTable(pool);
   startUploadCleanupJob(pool);
   const server = app.listen(port, '0.0.0.0', () => {
-    console.log(`PostgreSQL API listening on 0.0.0.0:${port}`);
+    const interfaces = os.networkInterfaces();
+    const networkIps = [];
+    for (const name of Object.keys(interfaces)) {
+      for (const iface of interfaces[name]) {
+        if (iface.family === 'IPv4' && !iface.internal) {
+          networkIps.push(iface.address);
+        }
+      }
+    }
+
+    console.log(`\n🚀 Server listening on port ${port}:`);
+    console.log(`   > Local:    http://localhost:${port}`);
+    if (networkIps.length > 0) {
+      networkIps.forEach((ip) => {
+        console.log(`   > Network:  http://${ip}:${port}`);
+        console.log(`   > API Base: http://${ip}:${port}/api/v1`);
+      });
+    } else {
+      console.log(`   > Network:  http://0.0.0.0:${port}`);
+    }
+    console.log('');
   });
   server.requestTimeout = 30 * 60 * 1000;
 }

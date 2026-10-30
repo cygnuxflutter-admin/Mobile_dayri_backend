@@ -89,6 +89,9 @@ const memberFields = [
   "sonIds",
   "fatherId",
   "fcmToken",
+  "createdBy",
+  "hasAppAccess",
+  "isClaimed",
 ];
 
 const requiredMemberFields = [
@@ -122,7 +125,7 @@ const createMembersTable = `
     "middleNameEnglish" TEXT NOT NULL,
     surname TEXT NOT NULL,
     "surnameEnglish" TEXT NOT NULL,
-    "mobileNumber" TEXT NOT NULL,
+    "mobileNumber" TEXT,
     "secondaryMobileNumber" VARCHAR(25) NULL DEFAULT NULL,
     "email" VARCHAR(150) NULL DEFAULT NULL,
     "business" TEXT NULL DEFAULT NULL,
@@ -149,7 +152,10 @@ const createMembersTable = `
     "fatherId" BIGINT REFERENCES members(id) ON DELETE SET NULL,
     "fcmToken" TEXT,
     "passwordHash" TEXT,
-    "isPasswordChange" BOOLEAN NOT NULL DEFAULT FALSE
+    "isPasswordChange" BOOLEAN NOT NULL DEFAULT FALSE,
+    "createdBy" BIGINT REFERENCES members(id) ON DELETE SET NULL,
+    "hasAppAccess" BOOLEAN NOT NULL DEFAULT TRUE,
+    "isClaimed" BOOLEAN NOT NULL DEFAULT TRUE
   )
 `;
 
@@ -266,6 +272,9 @@ function withComputedAge(member) {
     status: maritalStatus,
     maritalStatus: maritalStatus,
     age: calculateAgeFromDob(member.dateOfBirth ?? member.DateOfBirth),
+    createdBy: member.createdBy ? Number(member.createdBy) : null,
+    hasAppAccess: member.hasAppAccess ?? true,
+    isClaimed: member.isClaimed ?? true,
   };
 }
 
@@ -378,7 +387,13 @@ async function ensureMembersTable(pool) {
     ADD COLUMN IF NOT EXISTS "fatherId" BIGINT REFERENCES members(id) ON DELETE SET NULL,
     ADD COLUMN IF NOT EXISTS "fcmToken" TEXT,
     ADD COLUMN IF NOT EXISTS "passwordHash" TEXT,
-    ADD COLUMN IF NOT EXISTS "isPasswordChange" BOOLEAN NOT NULL DEFAULT FALSE
+    ADD COLUMN IF NOT EXISTS "isPasswordChange" BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS "createdBy" BIGINT REFERENCES members(id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS "hasAppAccess" BOOLEAN NOT NULL DEFAULT TRUE,
+    ADD COLUMN IF NOT EXISTS "isClaimed" BOOLEAN NOT NULL DEFAULT TRUE
+  `);
+  await pool.query(`
+    ALTER TABLE members ALTER COLUMN "mobileNumber" DROP NOT NULL;
   `);
   await pool.query(`
     UPDATE members SET "isApproved" = FALSE WHERE "isApproved" IS NULL;
@@ -576,6 +591,8 @@ function validateMemberUpdate(member) {
   }
   if (
     member.mobileNumber !== undefined &&
+    member.mobileNumber !== null &&
+    member.mobileNumber !== "" &&
     !/^\d{10}$/.test(member.mobileNumber)
   ) {
     return { error: "mobileNumber must be a valid 10-digit number" };
@@ -1238,6 +1255,87 @@ function memberController(pool) {
         return response
           .status(500)
           .json({ error: "Failed to change password" });
+      }
+    },
+
+    async resetPassword(request, response) {
+      const memberId = parseMemberId(request, response);
+      if (!memberId) {
+        return;
+      }
+
+      const newPassword = String(request.body?.newPassword || "").trim();
+      const confirmPassword = String(request.body?.confirmPassword || "").trim();
+
+      if (!newPassword) {
+        return response.status(400).json({
+          error: "newPassword is required",
+        });
+      }
+
+      if (newPassword.length < 6) {
+        return response.status(400).json({
+          error: "Password must be at least 6 characters",
+        });
+      }
+
+      if (confirmPassword && newPassword !== confirmPassword) {
+        return response.status(400).json({
+          error: "Passwords do not match",
+        });
+      }
+
+      const requesterRole = String(request.member?.role || "").toUpperCase();
+
+      try {
+        const memberResult = await pool.query(
+          `SELECT id, "role", "fullName" FROM members
+           WHERE id = $1 AND COALESCE("isDeleted", false) = false
+           LIMIT 1`,
+          [memberId],
+        );
+
+        if (memberResult.rowCount === 0) {
+          return response.status(404).json({ error: "Member not found" });
+        }
+
+        const targetMember = memberResult.rows[0];
+        const targetRole = String(targetMember.role || "USER").toUpperCase();
+
+        if (requesterRole === "ADMIN") {
+          if (targetRole !== "USER") {
+            return response.status(403).json({
+              error: "Admin can only reset password for Users",
+            });
+          }
+        } else if (requesterRole === "SUPERADMIN") {
+          if (targetRole === "SUPERADMIN" && Number(targetMember.id) !== Number(request.member.id)) {
+            return response.status(403).json({
+              error: "Cannot reset password for another SuperAdmin",
+            });
+          }
+        } else {
+          return response.status(403).json({
+            error: "Only ADMIN or SUPERADMIN can reset member passwords",
+          });
+        }
+
+        const passwordHash = await bcrypt.hash(newPassword, 12);
+
+        const queryText = `UPDATE members
+         SET "passwordHash" = $1, "isPasswordChange" = true, "updated_at" = NOW()
+         WHERE id = $2
+           AND COALESCE("isDeleted", false) = false
+         RETURNING id, "fullName", "role"`;
+
+        const result = await pool.query(queryText, [passwordHash, memberId]);
+
+        return sendSuccess(response, 200, "Password reset successfully", {
+          member: result.rows[0],
+        });
+      } catch (error) {
+        console.error("Failed to reset member password:", error.message);
+        return response.status(500).json({ error: "Failed to reset password" });
       }
     },
 
@@ -2525,17 +2623,10 @@ function memberController(pool) {
       const isElevatedUser =
         callerRole === "ADMIN" || callerRole === "SUPERADMIN";
 
-      // USER can update only their own profile
-      if (!isElevatedUser && callerId !== memberId) {
-        return response.status(403).json({
-          error: "Forbidden: You are only allowed to update your own profile",
-        });
-      }
-
       try {
         // Check target member exists and is not deleted
         const existingResult = await pool.query(
-          `SELECT id, "isDeleted", "mobileNumber", "countryCode", "fatherId", "sonIds"
+          `SELECT id, "isDeleted", "mobileNumber", "countryCode", "fatherId", "sonIds", "createdBy"
        FROM members
        WHERE id = $1
          AND COALESCE("isDeleted", false) = false
@@ -2546,6 +2637,19 @@ function memberController(pool) {
         if (existingResult.rowCount === 0) {
           return response.status(404).json({
             error: "Member not found",
+          });
+        }
+
+        const targetMemberRecord = existingResult.rows[0];
+        const isCreator =
+          targetMemberRecord.createdBy &&
+          Number(targetMemberRecord.createdBy) === callerId;
+
+        // USER can update only their own profile or family members created by them
+        if (!isElevatedUser && callerId !== memberId && !isCreator) {
+          return response.status(403).json({
+            error:
+              "Forbidden: You are only allowed to update your own profile or family members created by you",
           });
         }
 
@@ -2898,17 +3002,10 @@ function memberController(pool) {
       const isElevatedUser =
         callerRole === "ADMIN" || callerRole === "SUPERADMIN";
 
-      // USER can update only their own profile
-      if (!isElevatedUser && callerId !== memberId) {
-        return response.status(403).json({
-          error: "Forbidden: You are only allowed to update your own profile",
-        });
-      }
-
       try {
         // Check target member exists and is not deleted
         const existingResult = await pool.query(
-          `SELECT id, "isDeleted", "mobileNumber", "countryCode", "fatherId", "sonIds"
+          `SELECT id, "isDeleted", "mobileNumber", "countryCode", "fatherId", "sonIds", "createdBy"
        FROM members
        WHERE id = $1
          AND COALESCE("isDeleted", false) = false
@@ -2919,6 +3016,19 @@ function memberController(pool) {
         if (existingResult.rowCount === 0) {
           return response.status(404).json({
             error: "Member not found",
+          });
+        }
+
+        const targetMemberRecord = existingResult.rows[0];
+        const isCreator =
+          targetMemberRecord.createdBy &&
+          Number(targetMemberRecord.createdBy) === callerId;
+
+        // USER can update only their own profile or family members created by them
+        if (!isElevatedUser && callerId !== memberId && !isCreator) {
+          return response.status(403).json({
+            error:
+              "Forbidden: You are only allowed to update your own profile or family members created by you",
           });
         }
 
@@ -3249,6 +3359,599 @@ function memberController(pool) {
       return sendSuccess(response, 200, "Photo uploaded successfully", {
         photoUrl,
       });
+    },
+
+    /**
+     * Add a family member (Father or Son) without requiring a mobile number.
+     * The logged-in user becomes their guardian (createdBy).
+     * POST /api/v1/member/addFamilyMember
+     */
+    async addFamilyMember(request, response) {
+      const caller = request.member;
+      if (!caller || !caller.id) {
+        return response.status(401).json({ error: "Unauthorized" });
+      }
+
+      const callerId = Number(caller.id);
+      const body = request.body || {};
+
+      const rawRelType = String(
+        body.relationshipType || body.relation || "",
+      )
+        .toUpperCase()
+        .trim();
+      if (!["FATHER", "SON"].includes(rawRelType)) {
+        return response.status(400).json({
+          error:
+            "relationshipType is required and must be either 'FATHER' or 'SON'",
+        });
+      }
+
+      const firstName = String(body.firstName || "").trim();
+      if (!firstName) {
+        return response.status(400).json({ error: "firstName is required" });
+      }
+
+      // Fetch caller's latest details from database to inherit defaults
+      const callerResult = await pool.query(
+        `SELECT id, "firstName", "middleName", surname, "firstNameEnglish", "middleNameEnglish", "surnameEnglish",
+                "fatherId", "sonIds", "currentAddress", latlng, "isOutsideIndia", country, state, city
+         FROM members WHERE id = $1 AND COALESCE("isDeleted", false) = false LIMIT 1`,
+        [callerId],
+      );
+      if (callerResult.rowCount === 0) {
+        return response
+          .status(404)
+          .json({ error: "Caller member record not found" });
+      }
+      const callerMember = callerResult.rows[0];
+
+      let defaultMiddleName = "";
+      let defaultMiddleNameEnglish = "";
+      if (rawRelType === "SON") {
+        defaultMiddleName = callerMember.firstName || "";
+        defaultMiddleNameEnglish = callerMember.firstNameEnglish || "";
+      }
+
+      const middleName = String(body.middleName || defaultMiddleName).trim();
+      const surname = String(body.surname || callerMember.surname || "").trim();
+      const firstNameEnglish = String(body.firstNameEnglish || firstName).trim();
+      const middleNameEnglish = String(
+        body.middleNameEnglish || defaultMiddleNameEnglish || middleName,
+      ).trim();
+      const surnameEnglish = String(
+        body.surnameEnglish || callerMember.surnameEnglish || surname,
+      ).trim();
+
+      if (!surname) {
+        return response.status(400).json({ error: "surname is required" });
+      }
+
+      // Validation for FATHER relationship constraint
+      if (rawRelType === "FATHER" && callerMember.fatherId) {
+        const existingFather = await pool.query(
+          `SELECT "firstName", "surname" FROM members WHERE id = $1 LIMIT 1`,
+          [callerMember.fatherId],
+        );
+        const fatherName = existingFather.rows[0]
+          ? `${existingFather.rows[0].firstName} ${existingFather.rows[0].surname}`
+          : `#${callerMember.fatherId}`;
+        return response.status(400).json({
+          error: `You already have a Father linked to your profile (${fatherName}). Unlink the existing Father before adding a new one.`,
+        });
+      }
+
+      // Mobile number handling
+      let normalizedMobile = null;
+      let hasAppAccess = false;
+      const rawMobile = body.mobileNumber ? String(body.mobileNumber).trim() : "";
+      if (rawMobile) {
+        normalizedMobile = normalizeMobileNumber(rawMobile);
+        if (!/^\d{10}$/.test(normalizedMobile)) {
+          return response.status(400).json({
+            error: "mobileNumber must be a valid 10-digit number if provided",
+          });
+        }
+        const dupCheck = await pool.query(
+          `SELECT id FROM members WHERE "mobileNumber" = $1 AND COALESCE("isDeleted", false) = false LIMIT 1`,
+          [normalizedMobile],
+        );
+        if (dupCheck.rowCount > 0) {
+          return response.status(400).json({
+            error: "A member with this mobile number already exists",
+          });
+        }
+        hasAppAccess = true;
+      }
+
+      const countryCode = normalizeCountryCode(body.countryCode || "+91");
+      const gender = String(body.gender || "MALE").toUpperCase().trim();
+      const dateOfBirth = String(
+        body.dateOfBirth || body.DateOfBirth || "",
+      ).trim();
+      const business = normalizeBusiness(body.business);
+      const status = normalizeMaritalStatus(body.status || body.maritalStatus);
+      const secondaryMobileNumber = normalizeSecondaryMobileNumber(
+        body.secondaryMobileNumber,
+      );
+      const email = normalizeEmail(body.email);
+
+      // Address fields (inherit from caller if empty)
+      const isOutsideIndia =
+        body.isOutsideIndia !== undefined
+          ? Boolean(
+              body.isOutsideIndia === true ||
+                String(body.isOutsideIndia).toLowerCase() === "true",
+            )
+          : Boolean(callerMember.isOutsideIndia);
+      const country = String(
+        body.country || callerMember.country || "India",
+      ).trim();
+      const state = String(
+        body.state || callerMember.state || "Gujarat",
+      ).trim();
+      const city = String(body.city || callerMember.city || "").trim();
+      const currentAddress = String(
+        body.currentAddress || callerMember.currentAddress || "",
+      ).trim();
+      const latlng = String(body.latlng || callerMember.latlng || "").trim();
+
+      // Photo handling
+      let photoUrl = null;
+      if (request.file) {
+        photoUrl = `/uploads/members/${request.file.filename}`;
+      } else if (body.photoUrl || body.photo_url) {
+        photoUrl = String(body.photoUrl || body.photo_url).trim();
+      }
+
+      // Password if mobile is provided
+      let passwordHash = null;
+      if (hasAppAccess && body.password) {
+        passwordHash = await bcrypt.hash(String(body.password), 10);
+      }
+
+      const client = await pool.connect();
+      try {
+        await client.query("BEGIN");
+
+        const initialFatherId = rawRelType === "SON" ? callerId : null;
+        const initialSonIds = rawRelType === "FATHER" ? [callerId] : null;
+
+        const insertQuery = `
+          INSERT INTO members (
+            "firstName", "firstNameEnglish", "middleName", "middleNameEnglish",
+            surname, "surnameEnglish", "mobileNumber", "secondaryMobileNumber",
+            email, business, status, "countryCode", "passwordHash", gender,
+            "dateOfBirth", "isOutsideIndia", country, state, city,
+            "currentAddress", latlng, "sonIds", "fatherId", photo_url,
+            "isApproved", "isActive", "createdBy", "hasAppAccess", "isClaimed",
+            "isPasswordChange", created_at, updated_at
+          ) VALUES (
+            $1, $2, $3, $4, $5, $6, $7, $8,
+            $9, $10, $11, $12, $13, $14,
+            $15, $16, $17, $18, $19,
+            $20, $21, $22, $23, $24,
+            TRUE, TRUE, $25, $26, $27,
+            FALSE, NOW(), NOW()
+          ) RETURNING *
+        `;
+
+        const insertParams = [
+          firstName,
+          firstNameEnglish,
+          middleName,
+          middleNameEnglish,
+          surname,
+          surnameEnglish,
+          normalizedMobile,
+          secondaryMobileNumber,
+          email,
+          business,
+          status,
+          countryCode,
+          passwordHash,
+          gender,
+          dateOfBirth,
+          isOutsideIndia,
+          country,
+          state,
+          city,
+          currentAddress,
+          latlng,
+          initialSonIds,
+          initialFatherId,
+          photoUrl,
+          callerId,
+          hasAppAccess,
+          Boolean(hasAppAccess),
+        ];
+
+        const insertResult = await client.query(insertQuery, insertParams);
+        const newMember = insertResult.rows[0];
+
+        // Symmetrically update caller's relationship
+        if (rawRelType === "FATHER") {
+          await client.query(
+            `UPDATE members SET "fatherId" = $1, updated_at = NOW() WHERE id = $2`,
+            [newMember.id, callerId],
+          );
+        } else if (rawRelType === "SON") {
+          await client.query(
+            `UPDATE members
+             SET "sonIds" = CASE
+               WHEN "sonIds" IS NULL THEN ARRAY[$1::bigint]
+               WHEN NOT ($1::bigint = ANY("sonIds")) THEN array_append("sonIds", $1::bigint)
+               ELSE "sonIds"
+             END,
+             updated_at = NOW()
+             WHERE id = $2`,
+            [newMember.id, callerId],
+          );
+        }
+
+        await client.query("COMMIT");
+
+        const formatted = withComputedAge(newMember);
+        return sendSuccess(
+          response,
+          201,
+          `Family member (${rawRelType}) added successfully`,
+          formatted,
+        );
+      } catch (err) {
+        await client.query("ROLLBACK");
+        console.error("Failed to add family member:", err.message);
+        return response
+          .status(500)
+          .json({ error: "Failed to add family member: " + err.message });
+      } finally {
+        client.release();
+      }
+    },
+
+    /**
+     * Grant mobile number and app login access to a dependent family member.
+     * Can be called by guardian (createdBy), father, or ADMIN/SUPERADMIN.
+     * POST /api/v1/member/:id/grant-access
+     */
+    async grantAppAccess(request, response) {
+      const caller = request.member;
+      if (!caller || !caller.id) {
+        return response.status(401).json({ error: "Unauthorized" });
+      }
+
+      const targetId = Number(request.params.id);
+      if (!Number.isInteger(targetId) || targetId <= 0) {
+        return response
+          .status(400)
+          .json({ error: "Valid member ID is required" });
+      }
+
+      const callerId = Number(caller.id);
+      const callerRole = String(caller.role || "").toUpperCase();
+      const isElevated = ["ADMIN", "SUPERADMIN"].includes(callerRole);
+
+      const targetCheck = await pool.query(
+        `SELECT id, "firstName", "middleName", surname, "mobileNumber", "countryCode",
+                "createdBy", "fatherId", "hasAppAccess", "isDeleted"
+         FROM members WHERE id = $1 LIMIT 1`,
+        [targetId],
+      );
+
+      if (targetCheck.rowCount === 0 || targetCheck.rows[0].isDeleted) {
+        return response.status(404).json({ error: "Member not found" });
+      }
+
+      const target = targetCheck.rows[0];
+
+      // Permission check: caller must be creator, father, or elevated admin
+      const isCreator =
+        target.createdBy && Number(target.createdBy) === callerId;
+      const isFather =
+        target.fatherId && Number(target.fatherId) === callerId;
+      if (!isElevated && !isCreator && !isFather) {
+        return response.status(403).json({
+          error:
+            "Forbidden: You are not authorized to grant app access for this member",
+        });
+      }
+
+      // Check if already has app access
+      if (target.hasAppAccess && target.mobileNumber) {
+        return response.status(400).json({
+          error: `This member already has app access configured with mobile number ${target.mobileNumber}`,
+        });
+      }
+
+      const body = request.body || {};
+      const rawMobile = String(body.mobileNumber || "").trim();
+      const normalizedMobile = normalizeMobileNumber(rawMobile);
+      if (!/^\d{10}$/.test(normalizedMobile)) {
+        return response.status(400).json({
+          error: "mobileNumber is required and must be a valid 10-digit number",
+        });
+      }
+
+      const password = String(body.password || "").trim();
+      if (!password || password.length < 6) {
+        return response.status(400).json({
+          error: "password is required and must be at least 6 characters long",
+        });
+      }
+
+      const countryCode = normalizeCountryCode(body.countryCode || "+91");
+
+      // Check duplicate mobile among active members
+      const dup = await pool.query(
+        `SELECT id FROM members WHERE "mobileNumber" = $1 AND id != $2 AND COALESCE("isDeleted", false) = false LIMIT 1`,
+        [normalizedMobile, targetId],
+      );
+      if (dup.rowCount > 0) {
+        return response.status(400).json({
+          error: "This mobile number is already in use by another active member",
+        });
+      }
+
+      const passwordHash = await bcrypt.hash(password, 10);
+
+      const updateResult = await pool.query(
+        `UPDATE members
+         SET "mobileNumber" = $1,
+             "countryCode" = $2,
+             "passwordHash" = $3,
+             "hasAppAccess" = TRUE,
+             "isClaimed" = TRUE,
+             "isPasswordChange" = TRUE,
+             updated_at = NOW()
+         WHERE id = $4
+         RETURNING *`,
+        [normalizedMobile, countryCode, passwordHash, targetId],
+      );
+
+      const updatedMember = withComputedAge(updateResult.rows[0]);
+      return sendSuccess(
+        response,
+        200,
+        "App access granted successfully. Member can now log in using this mobile number and password.",
+        updatedMember,
+      );
+    },
+
+    /**
+     * Get the full genealogical family tree hierarchy for a member.
+     * Ascends to the topmost ancestor and recursively builds the tree downward.
+     * GET /api/v1/member/familyTree/:id?
+     */
+    async getFamilyTree(request, response) {
+      const caller = request.member;
+      if (!caller || !caller.id) {
+        return response.status(401).json({ error: "Unauthorized" });
+      }
+
+      const targetId = Number(request.params.id || caller.id);
+      if (!Number.isInteger(targetId) || targetId <= 0) {
+        return response
+          .status(400)
+          .json({ error: "Valid member ID is required" });
+      }
+
+      // Step 1: Trace up to topmost ancestor
+      let currentId = targetId;
+      const visited = new Set();
+      let rootId = targetId;
+
+      while (currentId && !visited.has(currentId) && visited.size < 50) {
+        visited.add(currentId);
+        const parentRes = await pool.query(
+          `SELECT id, "fatherId" FROM members WHERE id = $1 AND COALESCE("isDeleted", false) = false LIMIT 1`,
+          [currentId],
+        );
+        if (parentRes.rowCount === 0) break;
+        const row = parentRes.rows[0];
+        rootId = Number(row.id);
+        if (row.fatherId && !visited.has(Number(row.fatherId))) {
+          currentId = Number(row.fatherId);
+        } else {
+          break;
+        }
+      }
+
+      // Step 2: Fetch entire lineage from root downwards using recursive CTE
+      const lineageQuery = `
+        WITH RECURSIVE family_lineage AS (
+          SELECT 
+            m.id, m."firstName", m."middleName", m."surname",
+            m."firstNameEnglish", m."middleNameEnglish", m."surnameEnglish",
+            m."mobileNumber", m."photo_url", m.gender, m."dateOfBirth",
+            m.business, m.city, m.state, m.country, m.status,
+            m."fatherId", m."sonIds", m."hasAppAccess", m."isClaimed",
+            m."createdBy", m.role,
+            1 as level
+          FROM members m
+          WHERE m.id = $1 AND COALESCE(m."isDeleted", false) = false
+
+          UNION
+
+          SELECT 
+            c.id, c."firstName", c."middleName", c."surname",
+            c."firstNameEnglish", c."middleNameEnglish", c."surnameEnglish",
+            c."mobileNumber", c."photo_url", c.gender, c."dateOfBirth",
+            c.business, c.city, c.state, c.country, c.status,
+            c."fatherId", c."sonIds", c."hasAppAccess", c."isClaimed",
+            c."createdBy", c.role,
+            fl.level + 1 as level
+          FROM members c
+          INNER JOIN family_lineage fl 
+            ON (c."fatherId" = fl.id OR (fl."sonIds" IS NOT NULL AND c.id = ANY(fl."sonIds")))
+          WHERE COALESCE(c."isDeleted", false) = false
+            AND fl.level < 20
+        )
+        SELECT DISTINCT * FROM family_lineage ORDER BY level ASC, id ASC;
+      `;
+
+      try {
+        const result = await pool.query(lineageQuery, [rootId]);
+        const rows = result.rows;
+
+        if (rows.length === 0) {
+          return response
+            .status(404)
+            .json({ error: "No family records found" });
+        }
+
+        // Step 3: Format and assemble nodes into a tree structure
+        const nodeMap = new Map();
+
+        for (const m of rows) {
+          const id = Number(m.id);
+          const fullName = [m.firstName, m.middleName, m.surname]
+            .filter(Boolean)
+            .join(" ");
+          const fullNameEnglish = [
+            m.firstNameEnglish,
+            m.middleNameEnglish,
+            m.surnameEnglish,
+          ]
+            .filter(Boolean)
+            .join(" ");
+
+          nodeMap.set(id, {
+            id,
+            fullName,
+            fullNameEnglish: fullNameEnglish || null,
+            firstName: m.firstName,
+            middleName: m.middleName,
+            surname: m.surname,
+            firstNameEnglish: m.firstNameEnglish,
+            middleNameEnglish: m.middleNameEnglish,
+            surnameEnglish: m.surnameEnglish,
+            gender: m.gender,
+            dateOfBirth: m.dateOfBirth,
+            age: calculateAgeFromDob(m.dateOfBirth),
+            mobileNumber: m.mobileNumber || null,
+            photoUrl: m.photo_url || null,
+            business: m.business || null,
+            city: m.city || null,
+            state: m.state || null,
+            country: m.country || null,
+            maritalStatus: m.status || null,
+            hasAppAccess: m.hasAppAccess ?? true,
+            isClaimed: m.isClaimed ?? true,
+            createdBy: m.createdBy ? Number(m.createdBy) : null,
+            fatherId: m.fatherId ? Number(m.fatherId) : null,
+            sonIds: Array.isArray(m.sonIds) ? m.sonIds.map(Number) : [],
+            isTargetUser: id === targetId,
+            level: m.level,
+            children: [],
+          });
+        }
+
+        // Link children to parents
+        for (const [id, node] of nodeMap.entries()) {
+          if (
+            node.fatherId &&
+            nodeMap.has(node.fatherId) &&
+            node.fatherId !== id
+          ) {
+            const parent = nodeMap.get(node.fatherId);
+            if (!parent.children.some((child) => child.id === id)) {
+              parent.children.push(node);
+            }
+          }
+        }
+
+        const rootNode = nodeMap.get(rootId);
+
+        return sendSuccess(response, 200, "Family tree fetched successfully", {
+          targetMemberId: targetId,
+          rootMemberId: rootId,
+          totalMembers: rows.length,
+          tree: rootNode || null,
+        });
+      } catch (err) {
+        console.error("Failed to fetch family tree:", err.message);
+        return response
+          .status(500)
+          .json({ error: "Failed to fetch family tree: " + err.message });
+      }
+    },
+
+    /**
+     * Get direct family (father, sons, and managed members) for caller
+     * GET /api/v1/member/myFamily
+     */
+    async getMyFamily(request, response) {
+      const caller = request.member;
+      if (!caller || !caller.id) {
+        return response.status(401).json({ error: "Unauthorized" });
+      }
+
+      const callerId = Number(caller.id);
+
+      try {
+        const meRes = await pool.query(
+          `SELECT id, "firstName", "middleName", surname, "fatherId", "sonIds"
+           FROM members WHERE id = $1 AND COALESCE("isDeleted", false) = false LIMIT 1`,
+          [callerId],
+        );
+
+        if (meRes.rowCount === 0) {
+          return response.status(404).json({ error: "Member not found" });
+        }
+
+        const me = meRes.rows[0];
+
+        // 1. Father details
+        let father = null;
+        if (me.fatherId) {
+          const fatherRes = await pool.query(
+            `SELECT id, "firstName", "middleName", surname, "firstNameEnglish", "middleNameEnglish", "surnameEnglish",
+                    "mobileNumber", "photo_url", gender, "dateOfBirth", business, city, "hasAppAccess", "isClaimed"
+             FROM members WHERE id = $1 AND COALESCE("isDeleted", false) = false LIMIT 1`,
+            [me.fatherId],
+          );
+          if (fatherRes.rowCount > 0) {
+            father = withComputedAge(fatherRes.rows[0]);
+          }
+        }
+
+        // 2. Sons details
+        let sons = [];
+        const sonIds = Array.isArray(me.sonIds) ? me.sonIds.map(Number) : [];
+        if (sonIds.length > 0) {
+          const sonsRes = await pool.query(
+            `SELECT id, "firstName", "middleName", surname, "firstNameEnglish", "middleNameEnglish", "surnameEnglish",
+                    "mobileNumber", "photo_url", gender, "dateOfBirth", business, city, "hasAppAccess", "isClaimed"
+             FROM members WHERE id = ANY($1) AND COALESCE("isDeleted", false) = false
+             ORDER BY id ASC`,
+            [sonIds],
+          );
+          sons = sonsRes.rows.map(withComputedAge);
+        }
+
+        // 3. Managed members (created by caller)
+        const managedRes = await pool.query(
+          `SELECT id, "firstName", "middleName", surname, "firstNameEnglish", "middleNameEnglish", "surnameEnglish",
+                  "mobileNumber", "photo_url", gender, "dateOfBirth", business, city, "fatherId", "sonIds",
+                  "hasAppAccess", "isClaimed", "createdBy", created_at
+           FROM members
+           WHERE "createdBy" = $1 AND COALESCE("isDeleted", false) = false
+           ORDER BY id ASC`,
+          [callerId],
+        );
+        const managedMembers = managedRes.rows.map(withComputedAge);
+
+        return sendSuccess(response, 200, "My family fetched successfully", {
+          father,
+          sons,
+          managedMembers,
+        });
+      } catch (err) {
+        console.error("Failed to fetch my family:", err.message);
+        return response
+          .status(500)
+          .json({ error: "Failed to fetch my family: " + err.message });
+      }
     },
   };
 }

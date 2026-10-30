@@ -96,6 +96,9 @@ function memberResponse(member) {
     createdAt: member.created_at,
     updatedAt: member.updated_at,
     isPasswordChange: member.isPasswordChange,
+    createdBy: member.createdBy ?? null,
+    hasAppAccess: member.hasAppAccess ?? true,
+    isClaimed: member.isClaimed ?? true,
   };
 }
 
@@ -136,6 +139,19 @@ function authController(pool) {
 
         const member = result.rows[0];
 
+        if (member.isDeleted === true) {
+          return response.status(403).json({
+            error: "Account is deleted",
+          });
+        }
+
+        if (member.hasAppAccess === false) {
+          return response.status(403).json({
+            error:
+              "App access is not enabled for this profile yet. Please contact your family guardian to enable app access.",
+          });
+        }
+
         if (!member.passwordHash) {
           return response.status(401).json({
             error: "Password login is not configured for this member",
@@ -146,12 +162,6 @@ function authController(pool) {
           return response
             .status(401)
             .json({ error: "Invalid login credentials!" });
-        }
-
-        if (member.isDeleted === true) {
-          return response.status(403).json({
-            error: "Account is deleted",
-          });
         }
 
         if (member.isActive === false) {

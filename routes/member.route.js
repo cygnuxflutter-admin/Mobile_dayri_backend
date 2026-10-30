@@ -42,6 +42,12 @@ function createMemberRoutes(pool) {
     controller.changePassword,
   );
   router.post(
+    "/resetPassword/:id",
+    authMiddleware(pool),
+    bothAdminMiddleware(),
+    controller.resetPassword,
+  );
+  router.post(
   "/setPassword/:id?",
   authMiddleware(pool),
   controller.setPassword,
@@ -80,6 +86,29 @@ function createMemberRoutes(pool) {
     "/getSurnames",
     authMiddleware(pool),
     controller.getSurnames,
+  );
+
+  // Family & Genealogy routes
+  router.post(
+    "/addFamilyMember",
+    authMiddleware(pool),
+    flexibleMemberPhotoUpload,
+    controller.addFamilyMember,
+  );
+  router.post(
+    "/:id/grant-access",
+    authMiddleware(pool),
+    controller.grantAppAccess,
+  );
+  router.get(
+    "/familyTree/:id?",
+    authMiddleware(pool),
+    controller.getFamilyTree,
+  );
+  router.get(
+    "/myFamily",
+    authMiddleware(pool),
+    controller.getMyFamily,
   );
                                             
   router.post(
