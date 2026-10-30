@@ -4,7 +4,7 @@ require('dotenv').config({ path: path.join(__dirname, '.env') });
 
 const express = require('express');
 const { Pool } = require('pg');
-const { createApiRoutes, ensureMembersTable, ensureNotificationsTable, ensureUserNotificationsTable, ensureEventsTable, ensureEmergencyContactsTable, ensureRelationshipRequestsTable, ensureVideoUploadsTable } = require('./routes/router.routes');
+const { createApiRoutes, ensureMembersTable, ensureNotificationsTable, ensureUserNotificationsTable, ensureEventsTable, ensureEmergencyContactsTable, ensureRelationshipRequestsTable, ensureVideoUploadsTable, ensureSurnamesTable } = require('./routes/router.routes');
 const { startUploadCleanupJob } = require('./controller/videoUpload.controller');
 
 const app = express();
@@ -78,6 +78,7 @@ async function startServer() {
   await ensureEmergencyContactsTable(pool);
   await ensureRelationshipRequestsTable(pool);
   await ensureVideoUploadsTable(pool);
+  await ensureSurnamesTable(pool);
   startUploadCleanupJob(pool);
   const server = app.listen(port, '0.0.0.0', () => {
     const interfaces = os.networkInterfaces();

@@ -6,6 +6,7 @@ const { createReportRoutes } = require("./report.route");
 const { createEmergencyContactRoutes } = require("./emergencyContact.route");
 const { createRelationshipRoutes } = require("./relationship.route");
 const { createUploadRoutes } = require("./upload.route");
+const { createSurnameRoutes } = require("./surname.route");
 const {
   ensureMembersTable,
 } = require("../controller/member.controller");
@@ -40,11 +41,15 @@ function createApiRoutes(pool) {
     "/emergencyContact",
     createEmergencyContactRoutes(pool),
   );
+  // Public surname master routes (no auth required)
+  router.use("/surname", createSurnameRoutes(pool));
+  router.use("/surnames", createSurnameRoutes(pool));
 
   return router;
 }
 
 const { ensureEventsTable } = require("../controller/event.controller");
+const { ensureSurnamesTable } = require("../controller/surname.controller");
 
 module.exports = {
   createApiRoutes,
@@ -55,5 +60,6 @@ module.exports = {
   ensureEmergencyContactsTable,
   ensureRelationshipRequestsTable,
   ensureVideoUploadsTable,
+  ensureSurnamesTable,
 };
 

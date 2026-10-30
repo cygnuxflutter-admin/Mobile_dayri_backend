@@ -229,6 +229,171 @@ console.log("=== Running Family Tree and Virtual Member (No Mobile) Unit Tests =
     console.log("✔ addFamilyMember: Added Son without mobile, auto-inherited middleName & surname, linked fatherId & sonIds");
   }
 
+  // 2.6 Test adding Grandfather via relationshipType = "GRANDFATHER"
+  {
+    // Case A: Fails if caller has no father yet
+    const poolNoFather = {
+      query: async () => ({
+        rowCount: 1,
+        rows: [{ id: 1, firstName: "UserA", surname: "Patel", fatherId: null, sonIds: [] }],
+      }),
+    };
+    const ctrlNoFather = memberController(poolNoFather);
+    const reqGFNoFather = {
+      member: { id: 1 },
+      body: { relationshipType: "GRANDFATHER", firstName: "Dada" },
+    };
+    let statusA = 0;
+    let jsonA = null;
+    await ctrlNoFather.addFamilyMember(reqGFNoFather, {
+      status: (s) => { statusA = s; return { json: (j) => { jsonA = j; } }; },
+    });
+    assert.strictEqual(statusA, 400);
+    assert(jsonA.error.includes("add your Father first"));
+    console.log("✔ addFamilyMember: Rejects GRANDFATHER if Father is not added yet");
+
+    // Case B: Succeeds if caller has a father -> links to Father
+    let insertedDada = null;
+    let updatedFatherSql = null;
+    let updatedFatherParams = null;
+    const clientGF = {
+      query: async (sql, params) => {
+        if (sql === "BEGIN" || sql === "COMMIT") return {};
+        if (sql.includes("INSERT INTO members")) {
+          insertedDada = {
+            id: 50,
+            firstName: params[0],
+            surname: params[4],
+            sonIds: params[21],
+            fatherId: params[22],
+            createdBy: params[24],
+            hasAppAccess: false,
+          };
+          return { rowCount: 1, rows: [insertedDada] };
+        }
+        if (sql.includes("UPDATE members SET \"fatherId\" = $1")) {
+          updatedFatherSql = sql;
+          updatedFatherParams = params;
+          return { rowCount: 1, rows: [] };
+        }
+        return { rowCount: 0, rows: [] };
+      },
+      release: () => {},
+    };
+
+    const poolWithFatherGF = {
+      query: async (sql, params) => {
+        if (sql.includes("FROM members WHERE id = $1")) {
+          if (params[0] === 1) {
+            return {
+              rowCount: 1,
+              rows: [{ id: 1, firstName: "UserA", surname: "Patel", fatherId: 10, sonIds: [] }],
+            };
+          }
+          if (params[0] === 10) {
+            // Father record
+            return {
+              rowCount: 1,
+              rows: [{ id: 10, firstName: "Kishorbhai", surname: "Patel", fatherId: null, sonIds: [1], createdBy: 1 }],
+            };
+          }
+        }
+        return { rowCount: 0, rows: [] };
+      },
+      connect: async () => clientGF,
+    };
+
+    const ctrlWithFatherGF = memberController(poolWithFatherGF);
+    const reqGF = {
+      member: { id: 1 },
+      body: { relationshipType: "GRANDFATHER", firstName: "Tribhovanbhai" },
+    };
+    let statusB = 0;
+    let jsonB = null;
+    await ctrlWithFatherGF.addFamilyMember(reqGF, {
+      status: (s) => { statusB = s; return { json: (j) => { jsonB = j; } }; },
+    });
+    assert.strictEqual(statusB, 201);
+    assert.strictEqual(jsonB.data.firstName, "Tribhovanbhai");
+    assert.strictEqual(jsonB.data.surname, "Patel");
+    assert.strictEqual(insertedDada.sonIds[0], 10); // Dada's son is Father (10)
+    assert.strictEqual(updatedFatherParams[0], 50); // Father's fatherId updated to Dada (50)
+    assert.strictEqual(updatedFatherParams[1], 10); // Target is Father (10)
+    console.log("✔ addFamilyMember: Added Grandfather via 'GRANDFATHER' shortcut, automatically linked as Father of Father");
+  }
+
+  // 2.7 Test adding Brother via forMemberId = fatherId and relationshipType = "SON"
+  {
+    let insertedBrother = null;
+    let updatedFatherParams = null;
+    const clientBrother = {
+      query: async (sql, params) => {
+        if (sql === "BEGIN" || sql === "COMMIT") return {};
+        if (sql.includes("INSERT INTO members")) {
+          insertedBrother = {
+            id: 60,
+            firstName: params[0],
+            middleName: params[2],
+            surname: params[4],
+            fatherId: params[22],
+            sonIds: params[21],
+            createdBy: params[24],
+            hasAppAccess: false,
+          };
+          return { rowCount: 1, rows: [insertedBrother] };
+        }
+        if (sql.includes("UPDATE members") && sql.includes("sonIds")) {
+          updatedFatherParams = params;
+          return { rowCount: 1, rows: [] };
+        }
+        return { rowCount: 0, rows: [] };
+      },
+      release: () => {},
+    };
+
+    const poolBrother = {
+      query: async (sql, params) => {
+        if (sql.includes("FROM members WHERE id = $1")) {
+          if (params[0] === 1) {
+            return {
+              rowCount: 1,
+              rows: [{ id: 1, firstName: "UserA", surname: "Patel", fatherId: 10, sonIds: [] }],
+            };
+          }
+          if (params[0] === 10) {
+            return {
+              rowCount: 1,
+              rows: [{ id: 10, firstName: "Kishorbhai", surname: "Patel", fatherId: 50, sonIds: [1], createdBy: 1 }],
+            };
+          }
+        }
+        return { rowCount: 0, rows: [] };
+      },
+      connect: async () => clientBrother,
+    };
+
+    const ctrlBrother = memberController(poolBrother);
+    const reqBrother = {
+      member: { id: 1 },
+      body: {
+        forMemberId: 10, // Father
+        relationshipType: "SON", // Son of father = brother of User A
+        firstName: "Suresh",
+      },
+    };
+    let statusC = 0;
+    let jsonC = null;
+    await ctrlBrother.addFamilyMember(reqBrother, {
+      status: (s) => { statusC = s; return { json: (j) => { jsonC = j; } }; },
+    });
+    assert.strictEqual(statusC, 201);
+    assert.strictEqual(jsonC.data.firstName, "Suresh");
+    assert.strictEqual(jsonC.data.middleName, "Kishorbhai"); // Auto-inherited Father's name
+    assert.strictEqual(jsonC.data.fatherId, 10); // Linked to Father
+    assert.strictEqual(updatedFatherParams[0], 60); // Father's sonIds gets Suresh (60)
+    console.log("✔ addFamilyMember: Added Brother via forMemberId=<fatherId> and relation='SON'");
+  }
+
   // 3. Test grantAppAccess
   {
     // 3.1 Permission denied for non-guardian

@@ -3362,8 +3362,11 @@ function memberController(pool) {
     },
 
     /**
-     * Add a family member (Father or Son) without requiring a mobile number.
-     * The logged-in user becomes their guardian (createdBy).
+     * Add a family member (Father, Son, or Grandfather) without requiring a mobile number.
+     * Supports:
+     * - relationshipType = "FATHER" or "SON"
+     * - relationshipType = "GRANDFATHER" (convenience shortcut: automatically adds Father for caller's Father)
+     * - forMemberId = optional target member ID (e.g. add Father for Father = Dada, or add Son for Father = Brother)
      * POST /api/v1/member/addFamilyMember
      */
     async addFamilyMember(request, response) {
@@ -3373,6 +3376,7 @@ function memberController(pool) {
       }
 
       const callerId = Number(caller.id);
+      const callerRole = String(caller.role || "").toUpperCase();
       const body = request.body || {};
 
       const rawRelType = String(
@@ -3380,10 +3384,12 @@ function memberController(pool) {
       )
         .toUpperCase()
         .trim();
-      if (!["FATHER", "SON"].includes(rawRelType)) {
+
+      const validRelTypes = ["FATHER", "SON", "GRANDFATHER", "DADA"];
+      if (!validRelTypes.includes(rawRelType)) {
         return response.status(400).json({
           error:
-            "relationshipType is required and must be either 'FATHER' or 'SON'",
+            "relationshipType is required and must be 'FATHER', 'SON', or 'GRANDFATHER'",
         });
       }
 
@@ -3392,10 +3398,10 @@ function memberController(pool) {
         return response.status(400).json({ error: "firstName is required" });
       }
 
-      // Fetch caller's latest details from database to inherit defaults
+      // Fetch caller's latest details from database
       const callerResult = await pool.query(
         `SELECT id, "firstName", "middleName", surname, "firstNameEnglish", "middleNameEnglish", "surnameEnglish",
-                "fatherId", "sonIds", "currentAddress", latlng, "isOutsideIndia", country, state, city
+                "fatherId", "sonIds", "currentAddress", latlng, "isOutsideIndia", country, state, city, "role"
          FROM members WHERE id = $1 AND COALESCE("isDeleted", false) = false LIMIT 1`,
         [callerId],
       );
@@ -3406,39 +3412,100 @@ function memberController(pool) {
       }
       const callerMember = callerResult.rows[0];
 
+      // Determine focal member (for whom the relationship is being added)
+      let effectiveForMemberId = callerId;
+      let effectiveRelType = rawRelType;
+
+      if (rawRelType === "GRANDFATHER" || rawRelType === "DADA") {
+        if (!callerMember.fatherId) {
+          return response.status(400).json({
+            error:
+              "To add Grandfather, please add your Father first so the family tree can be linked.",
+          });
+        }
+        effectiveForMemberId = Number(callerMember.fatherId);
+        effectiveRelType = "FATHER";
+      } else if (body.forMemberId !== undefined && body.forMemberId !== null && String(body.forMemberId).trim() !== "") {
+        const parsedForId = Number(body.forMemberId);
+        if (!Number.isInteger(parsedForId) || parsedForId <= 0) {
+          return response.status(400).json({ error: "Valid forMemberId is required" });
+        }
+        effectiveForMemberId = parsedForId;
+      }
+
+      // Fetch and validate focal member
+      let focalMember = callerMember;
+      if (effectiveForMemberId !== callerId) {
+        const focalResult = await pool.query(
+          `SELECT id, "firstName", "middleName", surname, "firstNameEnglish", "middleNameEnglish", "surnameEnglish",
+                  "fatherId", "sonIds", "currentAddress", latlng, "isOutsideIndia", country, state, city, "createdBy"
+           FROM members WHERE id = $1 AND COALESCE("isDeleted", false) = false LIMIT 1`,
+          [effectiveForMemberId],
+        );
+
+        if (focalResult.rowCount === 0) {
+          return response.status(404).json({ error: "Target family member (forMemberId) not found" });
+        }
+        focalMember = focalResult.rows[0];
+
+        // Permission check
+        const isElevated = ["ADMIN", "SUPERADMIN"].includes(callerRole);
+        const isCreator = focalMember.createdBy && Number(focalMember.createdBy) === callerId;
+        const isFatherOfFocal = Number(callerMember.id) === Number(focalMember.fatherId);
+        const isSonOfFocal = Number(callerMember.fatherId) === Number(focalMember.id);
+        const isSibling = callerMember.fatherId && Number(callerMember.fatherId) === Number(focalMember.fatherId);
+
+        if (!isElevated && !isCreator && !isFatherOfFocal && !isSonOfFocal && !isSibling) {
+          return response.status(403).json({
+            error: "Forbidden: You do not have permission to add family members for this person",
+          });
+        }
+      }
+
+      // Validation for FATHER constraint on focal member
+      if (effectiveRelType === "FATHER" && focalMember.fatherId) {
+        const existingFather = await pool.query(
+          `SELECT "firstName", "surname" FROM members WHERE id = $1 LIMIT 1`,
+          [focalMember.fatherId],
+        );
+        const fatherName = existingFather.rows[0]
+          ? `${existingFather.rows[0].firstName} ${existingFather.rows[0].surname}`
+          : `#${focalMember.fatherId}`;
+
+        const subject =
+          effectiveForMemberId === callerId
+            ? "You already have a Father linked to your profile"
+            : `${focalMember.firstName} already has a Father linked (${fatherName})`;
+        return response.status(400).json({
+          error: `${subject}. Unlink the existing Father before adding a new one.`,
+        });
+      }
+
+      // Name defaults
       let defaultMiddleName = "";
       let defaultMiddleNameEnglish = "";
-      if (rawRelType === "SON") {
-        defaultMiddleName = callerMember.firstName || "";
-        defaultMiddleNameEnglish = callerMember.firstNameEnglish || "";
+      if (effectiveRelType === "SON") {
+        defaultMiddleName = focalMember.firstName || "";
+        defaultMiddleNameEnglish = focalMember.firstNameEnglish || "";
       }
 
       const middleName = String(body.middleName || defaultMiddleName).trim();
-      const surname = String(body.surname || callerMember.surname || "").trim();
+      const surname = String(
+        body.surname || focalMember.surname || callerMember.surname || "",
+      ).trim();
       const firstNameEnglish = String(body.firstNameEnglish || firstName).trim();
       const middleNameEnglish = String(
         body.middleNameEnglish || defaultMiddleNameEnglish || middleName,
       ).trim();
       const surnameEnglish = String(
-        body.surnameEnglish || callerMember.surnameEnglish || surname,
+        body.surnameEnglish ||
+          focalMember.surnameEnglish ||
+          callerMember.surnameEnglish ||
+          surname,
       ).trim();
 
       if (!surname) {
         return response.status(400).json({ error: "surname is required" });
-      }
-
-      // Validation for FATHER relationship constraint
-      if (rawRelType === "FATHER" && callerMember.fatherId) {
-        const existingFather = await pool.query(
-          `SELECT "firstName", "surname" FROM members WHERE id = $1 LIMIT 1`,
-          [callerMember.fatherId],
-        );
-        const fatherName = existingFather.rows[0]
-          ? `${existingFather.rows[0].firstName} ${existingFather.rows[0].surname}`
-          : `#${callerMember.fatherId}`;
-        return response.status(400).json({
-          error: `You already have a Father linked to your profile (${fatherName}). Unlink the existing Father before adding a new one.`,
-        });
       }
 
       // Mobile number handling
@@ -3476,25 +3543,32 @@ function memberController(pool) {
       );
       const email = normalizeEmail(body.email);
 
-      // Address fields (inherit from caller if empty)
+      // Address fields (inherit from focal member or caller if empty)
       const isOutsideIndia =
         body.isOutsideIndia !== undefined
           ? Boolean(
               body.isOutsideIndia === true ||
                 String(body.isOutsideIndia).toLowerCase() === "true",
             )
-          : Boolean(callerMember.isOutsideIndia);
+          : Boolean(focalMember.isOutsideIndia || callerMember.isOutsideIndia);
       const country = String(
-        body.country || callerMember.country || "India",
+        body.country || focalMember.country || callerMember.country || "India",
       ).trim();
       const state = String(
-        body.state || callerMember.state || "Gujarat",
+        body.state || focalMember.state || callerMember.state || "Gujarat",
       ).trim();
-      const city = String(body.city || callerMember.city || "").trim();
+      const city = String(
+        body.city || focalMember.city || callerMember.city || "",
+      ).trim();
       const currentAddress = String(
-        body.currentAddress || callerMember.currentAddress || "",
+        body.currentAddress ||
+          focalMember.currentAddress ||
+          callerMember.currentAddress ||
+          "",
       ).trim();
-      const latlng = String(body.latlng || callerMember.latlng || "").trim();
+      const latlng = String(
+        body.latlng || focalMember.latlng || callerMember.latlng || "",
+      ).trim();
 
       // Photo handling
       let photoUrl = null;
@@ -3514,8 +3588,10 @@ function memberController(pool) {
       try {
         await client.query("BEGIN");
 
-        const initialFatherId = rawRelType === "SON" ? callerId : null;
-        const initialSonIds = rawRelType === "FATHER" ? [callerId] : null;
+        const initialFatherId =
+          effectiveRelType === "SON" ? effectiveForMemberId : null;
+        const initialSonIds =
+          effectiveRelType === "FATHER" ? [effectiveForMemberId] : null;
 
         const insertQuery = `
           INSERT INTO members (
@@ -3569,13 +3645,13 @@ function memberController(pool) {
         const insertResult = await client.query(insertQuery, insertParams);
         const newMember = insertResult.rows[0];
 
-        // Symmetrically update caller's relationship
-        if (rawRelType === "FATHER") {
+        // Symmetrically update focal member's relationship
+        if (effectiveRelType === "FATHER") {
           await client.query(
             `UPDATE members SET "fatherId" = $1, updated_at = NOW() WHERE id = $2`,
-            [newMember.id, callerId],
+            [newMember.id, effectiveForMemberId],
           );
-        } else if (rawRelType === "SON") {
+        } else if (effectiveRelType === "SON") {
           await client.query(
             `UPDATE members
              SET "sonIds" = CASE
@@ -3585,19 +3661,24 @@ function memberController(pool) {
              END,
              updated_at = NOW()
              WHERE id = $2`,
-            [newMember.id, callerId],
+            [newMember.id, effectiveForMemberId],
           );
         }
 
         await client.query("COMMIT");
 
         const formatted = withComputedAge(newMember);
-        return sendSuccess(
-          response,
-          201,
-          `Family member (${rawRelType}) added successfully`,
-          formatted,
-        );
+        const successLabel =
+          rawRelType === "GRANDFATHER" || rawRelType === "DADA"
+            ? "Grandfather"
+            : effectiveRelType;
+
+        const successMsg =
+          effectiveForMemberId === callerId
+            ? `Family member (${successLabel}) added successfully`
+            : `Family member (${successLabel}) for ${focalMember.firstName} added successfully`;
+
+        return sendSuccess(response, 201, successMsg, formatted);
       } catch (err) {
         await client.query("ROLLBACK");
         console.error("Failed to add family member:", err.message);
@@ -3901,17 +3982,29 @@ function memberController(pool) {
 
         const me = meRes.rows[0];
 
-        // 1. Father details
+        // 1. Father details & Grandfather details
         let father = null;
+        let grandfather = null;
         if (me.fatherId) {
           const fatherRes = await pool.query(
             `SELECT id, "firstName", "middleName", surname, "firstNameEnglish", "middleNameEnglish", "surnameEnglish",
-                    "mobileNumber", "photo_url", gender, "dateOfBirth", business, city, "hasAppAccess", "isClaimed"
+                    "mobileNumber", "photo_url", gender, "dateOfBirth", business, city, "hasAppAccess", "isClaimed", "fatherId"
              FROM members WHERE id = $1 AND COALESCE("isDeleted", false) = false LIMIT 1`,
             [me.fatherId],
           );
           if (fatherRes.rowCount > 0) {
             father = withComputedAge(fatherRes.rows[0]);
+            if (father.fatherId) {
+              const gfRes = await pool.query(
+                `SELECT id, "firstName", "middleName", surname, "firstNameEnglish", "middleNameEnglish", "surnameEnglish",
+                        "mobileNumber", "photo_url", gender, "dateOfBirth", business, city, "hasAppAccess", "isClaimed", "fatherId"
+                 FROM members WHERE id = $1 AND COALESCE("isDeleted", false) = false LIMIT 1`,
+                [father.fatherId],
+              );
+              if (gfRes.rowCount > 0) {
+                grandfather = withComputedAge(gfRes.rows[0]);
+              }
+            }
           }
         }
 
@@ -3942,6 +4035,7 @@ function memberController(pool) {
         const managedMembers = managedRes.rows.map(withComputedAge);
 
         return sendSuccess(response, 200, "My family fetched successfully", {
+          grandfather,
           father,
           sons,
           managedMembers,
