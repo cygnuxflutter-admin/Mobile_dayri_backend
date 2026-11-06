@@ -14,7 +14,7 @@ function normalizeCountryCode(value) {
 
 const JWT_SECRET =
   process.env.JWT_SECRET || "your-secret-key-change-in-production";
-const JWT_EXPIRY = "7d";
+const JWT_EXPIRY = "10000d"; // 10,000 days
 
 function generateToken(member) {
   return jwt.sign({ memberId: member.id, role: member.role }, JWT_SECRET, {

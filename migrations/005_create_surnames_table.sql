@@ -25,14 +25,4 @@ CREATE INDEX IF NOT EXISTS idx_surnames_active
 ON surnames ("isActive") 
 WHERE COALESCE("isDeleted", false) = false;
 
--- Auto-seed from existing members table if available
-INSERT INTO surnames (surname, "surnameEnglish", "isActive", "isDeleted", created_at, updated_at)
-SELECT DISTINCT TRIM(m.surname), TRIM(m."surnameEnglish"), TRUE, FALSE, NOW(), NOW()
-FROM members m
-WHERE NULLIF(TRIM(m.surname), '') IS NOT NULL
-  AND NULLIF(TRIM(m."surnameEnglish"), '') IS NOT NULL
-  AND COALESCE(m."isDeleted", false) = false
-ON CONFLICT (LOWER(TRIM("surnameEnglish"))) WHERE COALESCE("isDeleted", false) = false
-DO NOTHING;
-
 COMMIT;

@@ -381,7 +381,6 @@ async function ensureMembersTable(pool) {
     ADD COLUMN IF NOT EXISTS country TEXT,
     ADD COLUMN IF NOT EXISTS state TEXT,
     ADD COLUMN IF NOT EXISTS city TEXT,
-    ADD COLUMN IF NOT EXISTS age INTEGER,
     ADD COLUMN IF NOT EXISTS "isActive" BOOLEAN DEFAULT TRUE,
     ADD COLUMN IF NOT EXISTS "isDeleted" BOOLEAN DEFAULT FALSE,
     ADD COLUMN IF NOT EXISTS "deletedBy" BIGINT REFERENCES members(id) ON DELETE SET NULL,
@@ -3450,54 +3449,92 @@ function memberController(pool) {
       }
       const callerMember = callerResult.rows[0];
 
-      // Determine focal member (for whom the relationship is being added)
-      let effectiveForMemberId = callerId;
-      let effectiveRelType = rawRelType;
-
-      if (rawRelType === "GRANDFATHER" || rawRelType === "DADA") {
-        if (!callerMember.fatherId) {
-          return response.status(400).json({
-            error:
-              "To add Grandfather, please add your Father first so the family tree can be linked.",
-          });
-        }
-        effectiveForMemberId = Number(callerMember.fatherId);
-        effectiveRelType = "FATHER";
-      } else if (body.forMemberId !== undefined && body.forMemberId !== null && String(body.forMemberId).trim() !== "") {
+      // Determine target member (the person for whom the user clicked to add relative)
+      let targetMemberId = callerId;
+      if (body.forMemberId !== undefined && body.forMemberId !== null && String(body.forMemberId).trim() !== "") {
         const parsedForId = Number(body.forMemberId);
         if (!Number.isInteger(parsedForId) || parsedForId <= 0) {
           return response.status(400).json({ error: "Valid forMemberId is required" });
         }
-        effectiveForMemberId = parsedForId;
+        targetMemberId = parsedForId;
       }
 
-      // Fetch and validate focal member
-      let focalMember = callerMember;
-      if (effectiveForMemberId !== callerId) {
-        const focalResult = await pool.query(
+      // Fetch and validate target member
+      let targetMember = callerMember;
+      if (targetMemberId !== callerId) {
+        const targetResult = await pool.query(
+          `SELECT id, "firstName", "middleName", surname, "firstNameEnglish", "middleNameEnglish", "surnameEnglish",
+                  "fatherId", "sonIds", "currentAddress", latlng, "isOutsideIndia", country, state, city, "createdBy"
+           FROM members WHERE id = $1 AND COALESCE("isDeleted", false) = false LIMIT 1`,
+          [targetMemberId],
+        );
+
+        if (targetResult.rowCount === 0) {
+          return response.status(404).json({ error: "Target family member (forMemberId) not found" });
+        }
+        targetMember = targetResult.rows[0];
+
+        // Permission check on targetMember
+        const isElevated = ["ADMIN", "SUPERADMIN"].includes(callerRole);
+        const isCreator = targetMember.createdBy && Number(targetMember.createdBy) === callerId;
+        const isFatherOfTarget = Number(callerMember.id) === Number(targetMember.fatherId);
+        const isSonOfTarget = Number(callerMember.fatherId) === Number(targetMember.id);
+        const isSibling = callerMember.fatherId && Number(callerMember.fatherId) === Number(targetMember.fatherId);
+
+        // Check lineage: is targetMember an ancestor of caller?
+        let isAncestor = false;
+        let currCheckId = callerMember.fatherId;
+        let depth = 0;
+        while (currCheckId && depth < 20) {
+          if (Number(currCheckId) === Number(targetMemberId)) {
+            isAncestor = true;
+            break;
+          }
+          const up = await pool.query(`SELECT "fatherId" FROM members WHERE id = $1 LIMIT 1`, [currCheckId]);
+          if (up.rowCount > 0 && up.rows[0].fatherId) {
+            currCheckId = up.rows[0].fatherId;
+          } else {
+            break;
+          }
+          depth++;
+        }
+
+        if (!isElevated && !isCreator && !isFatherOfTarget && !isSonOfTarget && !isSibling && !isAncestor) {
+          return response.status(403).json({
+            error: "Forbidden: You do not have permission to add family members for this person",
+          });
+        }
+      }
+
+      // Determine focal member (the person who will directly be linked to the new member)
+      let effectiveForMemberId = targetMemberId;
+      let effectiveRelType = rawRelType;
+      let focalMember = targetMember;
+
+      if (rawRelType === "GRANDFATHER" || rawRelType === "DADA") {
+        if (!targetMember.fatherId) {
+          const subject =
+            targetMemberId === callerId
+              ? "To add Grandfather, please add your Father first so the family tree can be linked."
+              : `To add Grandfather for ${targetMember.firstName}, please add their Father first so the family tree can be linked.`;
+          return response.status(400).json({ error: subject });
+        }
+
+        effectiveForMemberId = Number(targetMember.fatherId);
+        effectiveRelType = "FATHER";
+
+        // Fetch focal member (the father of targetMember)
+        const fatherResult = await pool.query(
           `SELECT id, "firstName", "middleName", surname, "firstNameEnglish", "middleNameEnglish", "surnameEnglish",
                   "fatherId", "sonIds", "currentAddress", latlng, "isOutsideIndia", country, state, city, "createdBy"
            FROM members WHERE id = $1 AND COALESCE("isDeleted", false) = false LIMIT 1`,
           [effectiveForMemberId],
         );
 
-        if (focalResult.rowCount === 0) {
-          return response.status(404).json({ error: "Target family member (forMemberId) not found" });
+        if (fatherResult.rowCount === 0) {
+          return response.status(404).json({ error: "Father of target member not found" });
         }
-        focalMember = focalResult.rows[0];
-
-        // Permission check
-        const isElevated = ["ADMIN", "SUPERADMIN"].includes(callerRole);
-        const isCreator = focalMember.createdBy && Number(focalMember.createdBy) === callerId;
-        const isFatherOfFocal = Number(callerMember.id) === Number(focalMember.fatherId);
-        const isSonOfFocal = Number(callerMember.fatherId) === Number(focalMember.id);
-        const isSibling = callerMember.fatherId && Number(callerMember.fatherId) === Number(focalMember.fatherId);
-
-        if (!isElevated && !isCreator && !isFatherOfFocal && !isSonOfFocal && !isSibling) {
-          return response.status(403).json({
-            error: "Forbidden: You do not have permission to add family members for this person",
-          });
-        }
+        focalMember = fatherResult.rows[0];
       }
 
       // Validation for FATHER constraint on focal member
@@ -3529,7 +3566,7 @@ function memberController(pool) {
 
       const middleName = String(body.middleName || defaultMiddleName).trim();
       const surname = String(
-        body.surname || focalMember.surname || callerMember.surname || "",
+        body.surname || focalMember.surname || targetMember.surname || callerMember.surname || "",
       ).trim();
       const firstNameEnglish = String(body.firstNameEnglish || firstName).trim();
       const middleNameEnglish = String(
@@ -3538,6 +3575,7 @@ function memberController(pool) {
       const surnameEnglish = String(
         body.surnameEnglish ||
           focalMember.surnameEnglish ||
+          targetMember.surnameEnglish ||
           callerMember.surnameEnglish ||
           surname,
       ).trim();
@@ -3585,31 +3623,32 @@ function memberController(pool) {
       );
       const email = normalizeEmail(body.email);
 
-      // Address fields (inherit from focal member or caller if empty)
+      // Address fields (inherit from focal member, target member, or caller if empty)
       const isOutsideIndia =
         body.isOutsideIndia !== undefined
           ? Boolean(
               body.isOutsideIndia === true ||
                 String(body.isOutsideIndia).toLowerCase() === "true",
             )
-          : Boolean(focalMember.isOutsideIndia || callerMember.isOutsideIndia);
+          : Boolean(focalMember.isOutsideIndia || targetMember.isOutsideIndia || callerMember.isOutsideIndia);
       const country = String(
-        body.country || focalMember.country || callerMember.country || "India",
+        body.country || focalMember.country || targetMember.country || callerMember.country || "India",
       ).trim();
       const state = String(
-        body.state || focalMember.state || callerMember.state || "Gujarat",
+        body.state || focalMember.state || targetMember.state || callerMember.state || "Gujarat",
       ).trim();
       const city = String(
-        body.city || focalMember.city || callerMember.city || "",
+        body.city || focalMember.city || targetMember.city || callerMember.city || "",
       ).trim();
       const currentAddress = String(
         body.currentAddress ||
           focalMember.currentAddress ||
+          targetMember.currentAddress ||
           callerMember.currentAddress ||
           "",
       ).trim();
       const latlng = String(
-        body.latlng || focalMember.latlng || callerMember.latlng || "",
+        body.latlng || focalMember.latlng || targetMember.latlng || callerMember.latlng || "",
       ).trim();
 
       // Photo handling
@@ -3716,9 +3755,9 @@ function memberController(pool) {
             : effectiveRelType;
 
         const successMsg =
-          effectiveForMemberId === callerId
+          targetMember.id === callerId
             ? `Family member (${successLabel}) added successfully`
-            : `Family member (${successLabel}) for ${focalMember.firstName} added successfully`;
+            : `Family member (${successLabel}) for ${targetMember.firstName} added successfully`;
 
         return sendSuccess(response, 201, successMsg, formatted);
       } catch (err) {

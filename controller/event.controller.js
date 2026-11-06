@@ -34,6 +34,7 @@ const createEventsTable = `
     video_urls JSONB,
     video_link TEXT,
     video_links JSONB,
+    "createBy" BIGINT REFERENCES members(id) ON DELETE SET NULL,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
   )
@@ -61,6 +62,12 @@ async function ensureEventsTable(pool) {
     SET video_links = jsonb_build_array(video_link)
     WHERE video_link IS NOT NULL AND video_links IS NULL
   `);
+  await pool.query(
+    `ALTER TABLE events ADD COLUMN IF NOT EXISTS "createBy" BIGINT REFERENCES members(id) ON DELETE SET NULL`,
+  );
+  await pool.query(
+    `CREATE INDEX IF NOT EXISTS idx_events_create_by ON events ("createBy")`,
+  );
 }
 
 function normalizeFilesInput(files) {
@@ -83,7 +90,7 @@ function isVideoFile(file) {
   );
 }
 
-function buildEventPayload(body, files, uploadSessionVideoUrl = null) {
+function buildEventPayload(body, files, uploadSessionVideoUrl = null, callerId = null) {
   const fileList = normalizeFilesInput(files);
   const imageUrls = fileList
     .filter(
@@ -127,6 +134,18 @@ function buildEventPayload(body, files, uploadSessionVideoUrl = null) {
         ? normalizeMediaUrl(uploadSessionVideoUrl)
         : null);
 
+  let createBy = undefined;
+  if (
+    body.createBy !== undefined ||
+    body.create_by !== undefined ||
+    body.createdBy !== undefined
+  ) {
+    const raw = body.createBy ?? body.create_by ?? body.createdBy;
+    createBy = raw !== null && raw !== "" ? Number(raw) : null;
+  } else if (callerId !== null && callerId !== undefined) {
+    createBy = Number(callerId);
+  }
+
   return {
     name: body.name?.trim() || null,
     eventDate: body.event_date || body.eventDate || null,
@@ -137,6 +156,7 @@ function buildEventPayload(body, files, uploadSessionVideoUrl = null) {
     videoLinks: normalizeVideoLinks(
       body.video_links ?? body.videoLinks ?? body.video_link ?? body.videoLink,
     ),
+    createBy,
   };
 }
 
@@ -251,6 +271,13 @@ function validateEvent(payload) {
   // Store the date at UTC midnight so PostgreSQL does not shift it to the previous day.
   payload.eventDate = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}T00:00:00Z`;
 
+  if (payload.createBy !== null && payload.createBy !== undefined) {
+    const num = Number(payload.createBy);
+    if (!Number.isInteger(num) || num < 1) {
+      return { error: "createBy must be a positive integer" };
+    }
+  }
+
   return null;
 }
 
@@ -282,7 +309,8 @@ function eventController(pool) {
         }
       }
 
-      const payload = buildEventPayload(request.body, request.files, uploadSessionVideoUrl);
+      const callerId = request.member ? Number(request.member.id) : null;
+      const payload = buildEventPayload(request.body, request.files, uploadSessionVideoUrl, callerId);
       const validationError = validateEvent(payload);
 
       console.log(validationError, "validationError");
@@ -293,8 +321,8 @@ function eventController(pool) {
 
       try {
         const result = await pool.query(
-          `INSERT INTO events (name, event_date, image_url, image_urls, video_url, video_urls, video_link, video_links)
-           VALUES ($1, $2::timestamptz, $3, $4::jsonb, $5, $6::jsonb, $7, $8::jsonb)
+          `INSERT INTO events (name, event_date, image_url, image_urls, video_url, video_urls, video_link, video_links, "createBy")
+           VALUES ($1, $2::timestamptz, $3, $4::jsonb, $5, $6::jsonb, $7, $8::jsonb, $9)
            RETURNING *`,
           [
             payload.name,
@@ -307,14 +335,20 @@ function eventController(pool) {
             payload.videoLinks.length > 0
               ? JSON.stringify(payload.videoLinks)
               : null,
+            payload.createBy ?? null,
           ],
         );
+
+        const createdEvent = {
+          ...result.rows[0],
+          createBy: result.rows[0].createBy ? Number(result.rows[0].createBy) : null,
+        };
 
         return sendSuccess(
           response,
           201,
           "Event created successfully",
-          result.rows[0],
+          createdEvent,
         );
       } catch (error) {
         console.error("Failed to add event:", error.message);
@@ -332,7 +366,7 @@ function eventController(pool) {
         const offset = (page - 1) * limit;
 
         const query = `
-          SELECT id, name, event_date, image_url, image_urls, video_url, video_urls, video_link, video_links, created_at, updated_at,
+          SELECT id, name, event_date, image_url, image_urls, video_url, video_urls, video_link, video_links, "createBy", created_at, updated_at,
                  COUNT(*) OVER() AS total_count
           FROM events
            ORDER BY event_date DESC, created_at DESC, id DESC
@@ -345,7 +379,10 @@ function eventController(pool) {
           result.rows.length > 0 ? Number(result.rows[0].total_count) : 0;
         const events = result.rows.map((r) => {
           const { total_count, ...rest } = r;
-          return rest;
+          return {
+            ...rest,
+            createBy: rest.createBy ? Number(rest.createBy) : null,
+          };
         });
 
         return sendSuccess(response, 200, "Events fetched successfully", {
@@ -377,11 +414,16 @@ function eventController(pool) {
           return response.status(404).json({ error: "Event not found" });
         }
 
+        const deletedEvent = {
+          ...result.rows[0],
+          createBy: result.rows[0].createBy ? Number(result.rows[0].createBy) : null,
+        };
+
         return sendSuccess(
           response,
           200,
           "Event deleted successfully",
-          result.rows[0],
+          deletedEvent,
         );
       } catch (error) {
         console.error("Failed to delete event:", error.message);
@@ -507,6 +549,14 @@ function eventController(pool) {
               : Array.isArray(existingEvent.video_links)
                 ? existingEvent.video_links
                 : normalizeVideoLinks(existingEvent.video_link),
+          createBy:
+            request.body.createBy !== undefined ||
+            request.body.create_by !== undefined ||
+            request.body.createdBy !== undefined
+              ? (request.body.createBy ?? request.body.create_by ?? request.body.createdBy
+                  ? Number(request.body.createBy ?? request.body.create_by ?? request.body.createdBy)
+                  : null)
+              : (existingEvent.createBy ? Number(existingEvent.createBy) : null),
         };
         let validationError = null;
         if (!payload.name) {
@@ -530,8 +580,9 @@ function eventController(pool) {
            SET name = $1, event_date = $2::timestamptz, image_url = $3,
                image_urls = $4::jsonb, video_url = $5, video_urls = $6::jsonb,
                video_link = $7, video_links = $8::jsonb,
+               "createBy" = $9,
                updated_at = NOW()
-             WHERE id = $9
+             WHERE id = $10
            RETURNING *`,
           [
             payload.name,
@@ -544,17 +595,23 @@ function eventController(pool) {
             payload.videoLinks.length > 0
               ? JSON.stringify(payload.videoLinks)
               : null,
+            payload.createBy,
             eventId,
           ],
         );
 
         removeEventFiles([...deletedImageUrls, ...deletedVideoUrls]);
 
+        const updatedEvent = {
+          ...result.rows[0],
+          createBy: result.rows[0].createBy ? Number(result.rows[0].createBy) : null,
+        };
+
         return sendSuccess(
           response,
           200,
           "Event updated successfully",
-          result.rows[0],
+          updatedEvent,
         );
       } catch (error) {
         console.error("Failed to update event:", error.message);

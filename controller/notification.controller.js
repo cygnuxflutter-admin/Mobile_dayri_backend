@@ -33,6 +33,7 @@ const createNotificationsTable = `
     photo_url TEXT,
     photo_urls JSONB,
     is_active BOOLEAN DEFAULT TRUE,
+    "createBy" BIGINT REFERENCES members(id) ON DELETE SET NULL,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
   )
@@ -88,11 +89,23 @@ function parseContactNumbers(value) {
     .filter(Boolean);
 }
 
-function buildNotificationPayload(body, files) {
+function buildNotificationPayload(body, files, callerId = null) {
   const fileList = Array.isArray(files) ? files : files ? [files] : [];
   const photoUrls = fileList.length
     ? fileList.map((f) => `/uploads/notifications/${f.filename}`)
     : null;
+
+  let createBy = undefined;
+  if (
+    body.createBy !== undefined ||
+    body.create_by !== undefined ||
+    body.createdBy !== undefined
+  ) {
+    const raw = body.createBy ?? body.create_by ?? body.createdBy;
+    createBy = raw !== null && raw !== "" ? Number(raw) : null;
+  } else if (callerId !== null && callerId !== undefined) {
+    createBy = Number(callerId);
+  }
 
   return {
     title: body.title?.trim() || null,
@@ -105,6 +118,7 @@ function buildNotificationPayload(body, files) {
     notifyType: body.notify_type?.trim() || null,
     photoUrl: photoUrls ? photoUrls[0] : null,
     photoUrls,
+    createBy,
   };
 }
 
@@ -129,6 +143,13 @@ function validateNotification(payload, isUpdate = false) {
     }
   }
 
+  if (payload.createBy !== null && payload.createBy !== undefined) {
+    const num = Number(payload.createBy);
+    if (!Number.isInteger(num) || num < 1) {
+      return { error: "createBy must be a positive integer" };
+    }
+  }
+
   return null;
 }
 
@@ -136,6 +157,12 @@ async function ensureNotificationsTable(pool) {
   await pool.query(createNotificationsTable);
   // ensure column to store multiple photo URLs exists
   await pool.query(`ALTER TABLE notifications ADD COLUMN IF NOT EXISTS photo_urls JSONB`);
+  await pool.query(
+    `ALTER TABLE notifications ADD COLUMN IF NOT EXISTS "createBy" BIGINT REFERENCES members(id) ON DELETE SET NULL`
+  );
+  await pool.query(
+    `CREATE INDEX IF NOT EXISTS idx_notifications_create_by ON notifications ("createBy")`
+  );
 }
 
 async function ensureUserNotificationsTable(pool) {
@@ -166,7 +193,8 @@ function notificationController(pool) {
     async addNotification(request, response) {
       console.log("Request body:", request.body);
 
-      const payload = buildNotificationPayload(request.body, request.files);
+      const callerId = request.member ? Number(request.member.id) : null;
+      const payload = buildNotificationPayload(request.body, request.files, callerId);
       console.log("Notification added:", payload);
       const validationError = validateNotification(payload);
 
@@ -177,8 +205,8 @@ function notificationController(pool) {
       try {
         const result = await pool.query(
           `INSERT INTO notifications (
-             title, message, location, contact_numbers, notify_type, photo_url, photo_urls
-           ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+             title, message, location, contact_numbers, notify_type, photo_url, photo_urls, "createBy"
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)
            RETURNING *`,
           [
             payload.title,
@@ -188,14 +216,20 @@ function notificationController(pool) {
             payload.notifyType,
             payload.photoUrl,
             payload.photoUrls ? JSON.stringify(payload.photoUrls) : null,
+            payload.createBy ?? null,
           ],
         );
+
+        const createdNotification = {
+          ...result.rows[0],
+          createBy: result.rows[0].createBy ? Number(result.rows[0].createBy) : null,
+        };
 
         return sendSuccess(
           response,
           201,
           "Notification created successfully",
-          result.rows[0],
+          createdNotification,
         );
       } catch (error) {
         console.error("Failed to add notification:", error.message);
@@ -250,6 +284,10 @@ function notificationController(pool) {
         fields.push("photo_url = $" + (values.length + 1));
         values.push(payload.photoUrl);
       }
+      if (payload.createBy !== undefined) {
+        fields.push(`"createBy" = $` + (values.length + 1));
+        values.push(payload.createBy);
+      }
 
       if (fields.length === 0) {
         return response
@@ -272,11 +310,16 @@ function notificationController(pool) {
           return response.status(404).json({ error: "Notification not found" });
         }
 
+        const updatedNotification = {
+          ...result.rows[0],
+          createBy: result.rows[0].createBy ? Number(result.rows[0].createBy) : null,
+        };
+
         return sendSuccess(
           response,
           200,
           "Notification updated successfully",
-          result.rows[0],
+          updatedNotification,
         );
       } catch (error) {
         console.error("Failed to update notification:", error.message);
@@ -312,11 +355,16 @@ function notificationController(pool) {
           return response.status(404).json({ error: 'Notification not found' });
         }
 
+        const updatedNotification = {
+          ...result.rows[0],
+          createBy: result.rows[0].createBy ? Number(result.rows[0].createBy) : null,
+        };
+
         return sendSuccess(
           response,
           200,
           'Notification active state updated successfully',
-          result.rows[0],
+          updatedNotification,
         );
       } catch (error) {
         console.error('Failed to set notification active state:', error.message);
@@ -376,6 +424,7 @@ function notificationController(pool) {
         photo_url,
         photo_urls,
         is_active,
+        "createBy",
         created_at,
         updated_at,
         COUNT(*) OVER() AS total_count
@@ -394,7 +443,10 @@ function notificationController(pool) {
 
     const notifications = result.rows.map((r) => {
       const { total_count, ...rest } = r;
-      return rest;
+      return {
+        ...rest,
+        createBy: rest.createBy ? Number(rest.createBy) : null,
+      };
     });
 
     return sendSuccess(
@@ -436,11 +488,16 @@ function notificationController(pool) {
           return response.status(404).json({ error: "Notification not found" });
         }
 
+        const notification = {
+          ...result.rows[0],
+          createBy: result.rows[0].createBy ? Number(result.rows[0].createBy) : null,
+        };
+
         return sendSuccess(
           response,
           200,
           "Notification fetched successfully",
-          result.rows[0],
+          notification,
         );
       } catch (error) {
         console.error("Failed to fetch notification:", error.message);
@@ -559,4 +616,6 @@ module.exports = {
   ensureNotificationsTable,
   ensureUserNotificationsTable,
   createInAppNotification,
+  buildNotificationPayload,
+  validateNotification,
 };
