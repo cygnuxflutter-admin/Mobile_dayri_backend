@@ -1293,8 +1293,17 @@ function memberController(pool) {
         return;
       }
 
-      const newPassword = String(request.body?.newPassword || "").trim();
-      const confirmPassword = String(request.body?.confirmPassword || "").trim();
+      const newPassword = String(
+        request.body?.newPassword ??
+          request.body?.password ??
+          request.body?.new_password ??
+          ""
+      ).trim();
+      const confirmPassword = String(
+        request.body?.confirmPassword ??
+          request.body?.confirm_password ??
+          ""
+      ).trim();
 
       if (!newPassword) {
         return response.status(400).json({
@@ -1318,7 +1327,7 @@ function memberController(pool) {
 
       try {
         const memberResult = await pool.query(
-          `SELECT id, "role", "fullName" FROM members
+          `SELECT id, "role", "firstName", "middleName", surname FROM members
            WHERE id = $1 AND COALESCE("isDeleted", false) = false
            LIMIT 1`,
           [memberId],
@@ -1338,7 +1347,7 @@ function memberController(pool) {
             });
           }
         } else if (requesterRole === "SUPERADMIN") {
-          if (targetRole === "SUPERADMIN" && Number(targetMember.id) !== Number(request.member.id)) {
+          if (targetRole === "SUPERADMIN" && Number(targetMember.id) !== Number(request.member?.id)) {
             return response.status(403).json({
               error: "Cannot reset password for another SuperAdmin",
             });
@@ -1355,15 +1364,29 @@ function memberController(pool) {
          SET "passwordHash" = $1, "isPasswordChange" = true, "updated_at" = NOW()
          WHERE id = $2
            AND COALESCE("isDeleted", false) = false
-         RETURNING id, "fullName", "role"`;
+         RETURNING id, "role", "firstName", "middleName", surname`;
 
         const result = await pool.query(queryText, [passwordHash, memberId]);
 
+        if (result.rowCount === 0) {
+          return response.status(404).json({ error: "Member not found" });
+        }
+
+        const updated = result.rows[0];
+        const fullName = [updated.firstName, updated.middleName, updated.surname]
+          .filter(Boolean)
+          .join(" ")
+          .trim();
+
         return sendSuccess(response, 200, "Password reset successfully", {
-          member: result.rows[0],
+          member: {
+            id: Number(updated.id),
+            fullName,
+            role: updated.role,
+          },
         });
       } catch (error) {
-        console.error("Failed to reset member password:", error.message);
+        console.error("Failed to reset member password:", error);
         return response.status(500).json({ error: "Failed to reset password" });
       }
     },

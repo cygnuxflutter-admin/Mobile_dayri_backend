@@ -47,6 +47,18 @@ function createMemberRoutes(pool) {
     bothAdminMiddleware(),
     controller.resetPassword,
   );
+  router.put(
+    "/resetPassword/:id",
+    authMiddleware(pool),
+    bothAdminMiddleware(),
+    controller.resetPassword,
+  );
+  router.patch(
+    "/resetPassword/:id",
+    authMiddleware(pool),
+    bothAdminMiddleware(),
+    controller.resetPassword,
+  );
   router.post(
   "/setPassword/:id?",
   authMiddleware(pool),
