@@ -33,6 +33,9 @@ const createNotificationsTable = `
     photo_url TEXT,
     photo_urls JSONB,
     is_active BOOLEAN DEFAULT TRUE,
+    "isActive" BOOLEAN DEFAULT TRUE,
+    "isDeleted" BOOLEAN DEFAULT FALSE,
+    "deletedBy" BIGINT REFERENCES members(id) ON DELETE SET NULL,
     "createBy" BIGINT REFERENCES members(id) ON DELETE SET NULL,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
@@ -163,6 +166,24 @@ async function ensureNotificationsTable(pool) {
   await pool.query(
     `CREATE INDEX IF NOT EXISTS idx_notifications_create_by ON notifications ("createBy")`
   );
+  await pool.query(
+    `ALTER TABLE notifications ADD COLUMN IF NOT EXISTS "isActive" BOOLEAN DEFAULT TRUE`
+  );
+  await pool.query(
+    `ALTER TABLE notifications ADD COLUMN IF NOT EXISTS "isDeleted" BOOLEAN DEFAULT FALSE`
+  );
+  await pool.query(
+    `ALTER TABLE notifications ADD COLUMN IF NOT EXISTS "deletedBy" BIGINT REFERENCES members(id) ON DELETE SET NULL`
+  );
+  await pool.query(
+    `CREATE INDEX IF NOT EXISTS idx_notifications_is_deleted ON notifications ("isDeleted")`
+  );
+  await pool.query(
+    `CREATE INDEX IF NOT EXISTS idx_notifications_is_active ON notifications ("isActive")`
+  );
+  await pool.query(
+    `CREATE INDEX IF NOT EXISTS idx_notifications_deleted_by ON notifications ("deletedBy")`
+  );
 }
 
 async function ensureUserNotificationsTable(pool) {
@@ -205,8 +226,8 @@ function notificationController(pool) {
       try {
         const result = await pool.query(
           `INSERT INTO notifications (
-             title, message, location, contact_numbers, notify_type, photo_url, photo_urls, "createBy"
-           ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)
+             title, message, location, contact_numbers, notify_type, photo_url, photo_urls, "createBy", is_active, "isActive", "isDeleted"
+           ) VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, TRUE, TRUE, FALSE)
            RETURNING *`,
           [
             payload.title,
@@ -223,6 +244,10 @@ function notificationController(pool) {
         const createdNotification = {
           ...result.rows[0],
           createBy: result.rows[0].createBy ? Number(result.rows[0].createBy) : null,
+          deletedBy: result.rows[0].deletedBy ? Number(result.rows[0].deletedBy) : null,
+          is_active: result.rows[0].is_active ?? true,
+          isActive: result.rows[0].isActive ?? result.rows[0].is_active ?? true,
+          isDeleted: result.rows[0].isDeleted ?? false,
         };
 
         return sendSuccess(
@@ -302,7 +327,7 @@ function notificationController(pool) {
 
       try {
         const result = await pool.query(
-          `UPDATE notifications SET ${fields.join(", ")} WHERE id = $${values.length} RETURNING *`,
+          `UPDATE notifications SET ${fields.join(", ")} WHERE id = $${values.length} AND COALESCE("isDeleted", false) = false RETURNING *`,
           values,
         );
 
@@ -313,6 +338,10 @@ function notificationController(pool) {
         const updatedNotification = {
           ...result.rows[0],
           createBy: result.rows[0].createBy ? Number(result.rows[0].createBy) : null,
+          deletedBy: result.rows[0].deletedBy ? Number(result.rows[0].deletedBy) : null,
+          is_active: result.rows[0].is_active ?? true,
+          isActive: result.rows[0].isActive ?? result.rows[0].is_active ?? true,
+          isDeleted: result.rows[0].isDeleted ?? false,
         };
 
         return sendSuccess(
@@ -347,7 +376,7 @@ function notificationController(pool) {
 
       try {
         const result = await pool.query(
-          'UPDATE notifications SET is_active = $1, updated_at = NOW() WHERE id = $2 RETURNING *',
+          'UPDATE notifications SET is_active = $1, "isActive" = $1, updated_at = NOW() WHERE id = $2 AND COALESCE("isDeleted", false) = false RETURNING *',
           [is_active, notificationId],
         );
 
@@ -358,6 +387,10 @@ function notificationController(pool) {
         const updatedNotification = {
           ...result.rows[0],
           createBy: result.rows[0].createBy ? Number(result.rows[0].createBy) : null,
+          deletedBy: result.rows[0].deletedBy ? Number(result.rows[0].deletedBy) : null,
+          is_active: result.rows[0].is_active ?? true,
+          isActive: result.rows[0].isActive ?? result.rows[0].is_active ?? true,
+          isDeleted: result.rows[0].isDeleted ?? false,
         };
 
         return sendSuccess(
@@ -380,18 +413,45 @@ function notificationController(pool) {
           .json({ error: "Notification id must be a positive integer" });
       }
 
+      const deletedBy = request.member?.id
+        ? Number(request.member.id)
+        : request.body?.deletedBy
+          ? Number(request.body.deletedBy)
+          : null;
+
       try {
         const result = await pool.query(
-          "DELETE FROM notifications WHERE id = $1 RETURNING id",
-          [notificationId],
+          `UPDATE notifications
+           SET "isDeleted" = TRUE,
+               "isActive" = FALSE,
+               is_active = FALSE,
+               "deletedBy" = $1,
+               updated_at = NOW()
+           WHERE id = $2
+             AND COALESCE("isDeleted", false) = false
+           RETURNING *`,
+          [deletedBy, notificationId],
         );
+
         if (result.rowCount === 0) {
           return response.status(404).json({ error: "Notification not found" });
         }
 
-        return sendSuccess(response, 200, "Notification deleted successfully", {
-          id: result.rows[0].id,
-        });
+        const deletedNotification = {
+          ...result.rows[0],
+          createBy: result.rows[0].createBy ? Number(result.rows[0].createBy) : null,
+          deletedBy: result.rows[0].deletedBy ? Number(result.rows[0].deletedBy) : null,
+          is_active: result.rows[0].is_active ?? false,
+          isActive: result.rows[0].isActive ?? false,
+          isDeleted: result.rows[0].isDeleted ?? true,
+        };
+
+        return sendSuccess(
+          response,
+          200,
+          "Notification deleted successfully",
+          deletedNotification,
+        );
       } catch (error) {
         console.error("Failed to delete notification:", error.message);
         return response
@@ -413,6 +473,12 @@ function notificationController(pool) {
     // ADMIN / SUPERADMIN / other roles -> all notifications
     const isUser = request.member?.role === 'USER';
 
+    const whereConditions = ['COALESCE("isDeleted", false) = false'];
+    if (isUser) {
+      whereConditions.push('(COALESCE(is_active, true) = true AND COALESCE("isActive", true) = true)');
+    }
+    const whereClause = `WHERE ${whereConditions.join(' AND ')}`;
+
     const query = `
       SELECT 
         id,
@@ -424,12 +490,15 @@ function notificationController(pool) {
         photo_url,
         photo_urls,
         is_active,
+        "isActive",
+        "isDeleted",
+        "deletedBy",
         "createBy",
         created_at,
         updated_at,
         COUNT(*) OVER() AS total_count
       FROM notifications
-      ${isUser ? 'WHERE is_active = true' : ''}
+      ${whereClause}
       ORDER BY created_at DESC
       LIMIT $1 OFFSET $2
     `;
@@ -446,6 +515,10 @@ function notificationController(pool) {
       return {
         ...rest,
         createBy: rest.createBy ? Number(rest.createBy) : null,
+        deletedBy: rest.deletedBy ? Number(rest.deletedBy) : null,
+        is_active: rest.is_active ?? true,
+        isActive: rest.isActive ?? rest.is_active ?? true,
+        isDeleted: rest.isDeleted ?? false,
       };
     });
 
@@ -481,7 +554,7 @@ function notificationController(pool) {
 
       try {
         const result = await pool.query(
-          "SELECT * FROM notifications WHERE id = $1",
+          'SELECT * FROM notifications WHERE id = $1 AND COALESCE("isDeleted", false) = false',
           [notificationId],
         );
         if (result.rowCount === 0) {
@@ -491,6 +564,10 @@ function notificationController(pool) {
         const notification = {
           ...result.rows[0],
           createBy: result.rows[0].createBy ? Number(result.rows[0].createBy) : null,
+          deletedBy: result.rows[0].deletedBy ? Number(result.rows[0].deletedBy) : null,
+          is_active: result.rows[0].is_active ?? true,
+          isActive: result.rows[0].isActive ?? result.rows[0].is_active ?? true,
+          isDeleted: result.rows[0].isDeleted ?? false,
         };
 
         return sendSuccess(

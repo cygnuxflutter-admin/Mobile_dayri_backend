@@ -68,15 +68,6 @@ const memberFields = [
   "surname",
   "surnameEnglish",
   "mobileNumber",
-  "secondaryMobileNumber",
-  "email",
-  "business",
-  "status",
-  "countryCode",
-  "isOutsideIndia",
-  "country",
-  "state",
-  "city",
   "gender",
   "dateOfBirth",
   "isActive",
@@ -86,9 +77,25 @@ const memberFields = [
   "approvedBy",
   "created_at",
   "updated_at",
+  "photo_url",
+  "currentAddress",
+  "latlng",
+  "role",
   "sonIds",
   "fatherId",
   "fcmToken",
+  "passwordHash",
+  "isPasswordChange",
+  "age",
+  "countryCode",
+  "isOutsideIndia",
+  "country",
+  "state",
+  "city",
+  "secondaryMobileNumber",
+  "email",
+  "business",
+  "status",
   "createdBy",
   "hasAppAccess",
   "isClaimed",
@@ -126,17 +133,8 @@ const createMembersTable = `
     surname TEXT NOT NULL,
     "surnameEnglish" TEXT NOT NULL,
     "mobileNumber" TEXT,
-    "secondaryMobileNumber" VARCHAR(25) NULL DEFAULT NULL,
-    "email" VARCHAR(150) NULL DEFAULT NULL,
-    "business" TEXT NULL DEFAULT NULL,
-    "status" TEXT NULL DEFAULT NULL,
-    "countryCode" TEXT NOT NULL DEFAULT '+91',
     gender TEXT NOT NULL CHECK (gender IN ('MALE', 'FEMALE')),
     "dateOfBirth" TEXT NOT NULL,
-    "isOutsideIndia" BOOLEAN NOT NULL DEFAULT FALSE,
-    country TEXT,
-    state TEXT,
-    city TEXT,
     "isActive" BOOLEAN DEFAULT TRUE,
     "isDeleted" BOOLEAN DEFAULT FALSE,
     "deletedBy" BIGINT REFERENCES members(id) ON DELETE SET NULL,
@@ -153,6 +151,16 @@ const createMembersTable = `
     "fcmToken" TEXT,
     "passwordHash" TEXT,
     "isPasswordChange" BOOLEAN NOT NULL DEFAULT FALSE,
+    age INTEGER,
+    "countryCode" TEXT NOT NULL DEFAULT '+91',
+    "isOutsideIndia" BOOLEAN NOT NULL DEFAULT FALSE,
+    country TEXT,
+    state TEXT,
+    city TEXT,
+    "secondaryMobileNumber" VARCHAR(25) NULL DEFAULT NULL,
+    "email" VARCHAR(150) NULL DEFAULT NULL,
+    "business" TEXT NULL DEFAULT NULL,
+    "status" TEXT NULL DEFAULT NULL,
     "createdBy" BIGINT REFERENCES members(id) ON DELETE SET NULL,
     "hasAppAccess" BOOLEAN NOT NULL DEFAULT TRUE,
     "isClaimed" BOOLEAN NOT NULL DEFAULT TRUE
@@ -370,17 +378,8 @@ async function ensureMembersTable(pool) {
     ADD COLUMN IF NOT EXISTS surname TEXT,
     ADD COLUMN IF NOT EXISTS "surnameEnglish" TEXT,
     ADD COLUMN IF NOT EXISTS "mobileNumber" TEXT,
-    ADD COLUMN IF NOT EXISTS "secondaryMobileNumber" VARCHAR(25) NULL DEFAULT NULL,
-    ADD COLUMN IF NOT EXISTS "email" VARCHAR(150) NULL DEFAULT NULL,
-    ADD COLUMN IF NOT EXISTS "business" TEXT NULL DEFAULT NULL,
-    ADD COLUMN IF NOT EXISTS "status" TEXT NULL DEFAULT NULL,
-    ADD COLUMN IF NOT EXISTS "countryCode" TEXT NOT NULL DEFAULT '+91',
     ADD COLUMN IF NOT EXISTS gender TEXT,
     ADD COLUMN IF NOT EXISTS "dateOfBirth" TEXT,
-    ADD COLUMN IF NOT EXISTS "isOutsideIndia" BOOLEAN NOT NULL DEFAULT FALSE,
-    ADD COLUMN IF NOT EXISTS country TEXT,
-    ADD COLUMN IF NOT EXISTS state TEXT,
-    ADD COLUMN IF NOT EXISTS city TEXT,
     ADD COLUMN IF NOT EXISTS "isActive" BOOLEAN DEFAULT TRUE,
     ADD COLUMN IF NOT EXISTS "isDeleted" BOOLEAN DEFAULT FALSE,
     ADD COLUMN IF NOT EXISTS "deletedBy" BIGINT REFERENCES members(id) ON DELETE SET NULL,
@@ -397,6 +396,16 @@ async function ensureMembersTable(pool) {
     ADD COLUMN IF NOT EXISTS "fcmToken" TEXT,
     ADD COLUMN IF NOT EXISTS "passwordHash" TEXT,
     ADD COLUMN IF NOT EXISTS "isPasswordChange" BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS age INTEGER,
+    ADD COLUMN IF NOT EXISTS "countryCode" TEXT NOT NULL DEFAULT '+91',
+    ADD COLUMN IF NOT EXISTS "isOutsideIndia" BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS country TEXT,
+    ADD COLUMN IF NOT EXISTS state TEXT,
+    ADD COLUMN IF NOT EXISTS city TEXT,
+    ADD COLUMN IF NOT EXISTS "secondaryMobileNumber" VARCHAR(25) NULL DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS "email" VARCHAR(150) NULL DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS "business" TEXT NULL DEFAULT NULL,
+    ADD COLUMN IF NOT EXISTS "status" TEXT NULL DEFAULT NULL,
     ADD COLUMN IF NOT EXISTS "createdBy" BIGINT REFERENCES members(id) ON DELETE SET NULL,
     ADD COLUMN IF NOT EXISTS "hasAppAccess" BOOLEAN NOT NULL DEFAULT TRUE,
     ADD COLUMN IF NOT EXISTS "isClaimed" BOOLEAN NOT NULL DEFAULT TRUE
@@ -409,11 +418,7 @@ async function ensureMembersTable(pool) {
     ALTER TABLE members
     ALTER COLUMN "isApproved" SET DEFAULT FALSE;
   `);
-  await pool.query(`
-    ALTER TABLE members DROP CONSTRAINT IF EXISTS members_age_check;
-    ALTER TABLE members ALTER COLUMN age DROP NOT NULL;
-    ALTER TABLE members ALTER COLUMN age DROP DEFAULT;
-  `);
+ 
   await pool.query(`
     UPDATE members SET "role" = 'USER' WHERE "role" IS NULL
   `);
@@ -1120,16 +1125,21 @@ function memberController(pool) {
           }
         }
 
+        const calculatedAge =
+          payload.age !== undefined && payload.age !== null
+            ? payload.age
+            : calculateAgeFromDob(payload.dateOfBirth);
+
         const memberResult = await client.query(
           `INSERT INTO members (
               "firstName", "firstNameEnglish", "middleName", "middleNameEnglish",
               surname, "surnameEnglish", "mobileNumber", "secondaryMobileNumber", "email",
               "business", "status",
               "countryCode", "passwordHash", gender,
-              "dateOfBirth", "isOutsideIndia", country, state, city,
+              "dateOfBirth", age, "isOutsideIndia", country, state, city,
               "currentAddress", "latlng", "sonIds", "fatherId",
               "photo_url", "created_at", "isPasswordChange"
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, NOW(), $25)
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, NOW(), $26)
             RETURNING *`,
           [
             payload.firstName,
@@ -1147,6 +1157,7 @@ function memberController(pool) {
             passwordHash,
             payload.gender,
             payload.dateOfBirth,
+            calculatedAge,
             payload.isOutsideIndia,
             payload.country,
             payload.state,
@@ -1862,15 +1873,46 @@ function memberController(pool) {
 
         await syncMemberSequence(client);
 
+        const pendingAge =
+          pendingMember.age !== undefined && pendingMember.age !== null
+            ? pendingMember.age
+            : calculateAgeFromDob(pendingMember.dateOfBirth);
+
         const memberResult = await client.query(
           `INSERT INTO members (
               "firstName", "firstNameEnglish", "middleName", "middleNameEnglish",
-              surname, "surnameEnglish", "mobileNumber", gender, "dateOfBirth", age, "currentAddress", "latlng",
+              surname, "surnameEnglish", "mobileNumber", "secondaryMobileNumber", "email",
+              "business", "status",
+              "countryCode", gender, "dateOfBirth", age,
+              "isOutsideIndia", country, state, city,
+              "currentAddress", "latlng",
               "sonIds", "fatherId", "photo_url", "created_at", "fcmToken"
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, NOW(), $16)
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, NOW(), $25)
            RETURNING id`,
           [
-            ...insertMemberFields.map((field) => pendingMember[field] ?? null),
+            pendingMember.firstName ?? null,
+            pendingMember.firstNameEnglish ?? null,
+            pendingMember.middleName ?? null,
+            pendingMember.middleNameEnglish ?? null,
+            pendingMember.surname ?? null,
+            pendingMember.surnameEnglish ?? null,
+            pendingMember.mobileNumber ?? null,
+            pendingMember.secondaryMobileNumber ?? null,
+            pendingMember.email ?? null,
+            pendingMember.business ?? null,
+            pendingMember.status ?? null,
+            pendingMember.countryCode ?? "+91",
+            pendingMember.gender ?? null,
+            pendingMember.dateOfBirth ?? null,
+            pendingAge ?? null,
+            pendingMember.isOutsideIndia ?? false,
+            pendingMember.country ?? null,
+            pendingMember.state ?? null,
+            pendingMember.city ?? null,
+            pendingMember.currentAddress ?? null,
+            pendingMember.latlng ?? null,
+            pendingMember.sonIds ?? null,
+            pendingMember.fatherId ?? null,
             pendingMember.photoUrl ?? null,
             pendingMember.fcmToken ?? null,
           ],
@@ -2917,6 +2959,7 @@ function memberController(pool) {
           "city",
           "gender",
           "dateOfBirth",
+          "age",
 
           // Mobile side fields
           "currentAddress",
@@ -3296,6 +3339,7 @@ function memberController(pool) {
           "city",
           "gender",
           "dateOfBirth",
+          "age",
 
           // Mobile side fields
           "currentAddress",
@@ -3675,6 +3719,15 @@ function memberController(pool) {
       ).trim();
 
       // Photo handling
+      const rawAge =
+        body.age !== undefined && body.age !== null && body.age !== ""
+          ? Number(body.age)
+          : null;
+      const age =
+        rawAge !== null && !Number.isNaN(rawAge)
+          ? rawAge
+          : calculateAgeFromDob(dateOfBirth);
+
       let photoUrl = null;
       if (request.file) {
         photoUrl = `/uploads/members/${request.file.filename}`;
@@ -3702,16 +3755,16 @@ function memberController(pool) {
             "firstName", "firstNameEnglish", "middleName", "middleNameEnglish",
             surname, "surnameEnglish", "mobileNumber", "secondaryMobileNumber",
             email, business, status, "countryCode", "passwordHash", gender,
-            "dateOfBirth", "isOutsideIndia", country, state, city,
+            "dateOfBirth", age, "isOutsideIndia", country, state, city,
             "currentAddress", latlng, "sonIds", "fatherId", photo_url,
             "isApproved", "isActive", "createdBy", "hasAppAccess", "isClaimed",
             "isPasswordChange", created_at, updated_at
           ) VALUES (
             $1, $2, $3, $4, $5, $6, $7, $8,
             $9, $10, $11, $12, $13, $14,
-            $15, $16, $17, $18, $19,
-            $20, $21, $22, $23, $24,
-            TRUE, TRUE, $25, $26, $27,
+            $15, $16, $17, $18, $19, $20,
+            $21, $22, $23, $24, $25,
+            TRUE, TRUE, $26, $27, $28,
             FALSE, NOW(), NOW()
           ) RETURNING *
         `;
@@ -3732,6 +3785,7 @@ function memberController(pool) {
           passwordHash,
           gender,
           dateOfBirth,
+          age,
           isOutsideIndia,
           country,
           state,
@@ -3903,78 +3957,146 @@ function memberController(pool) {
     },
 
     /**
-     * Get the full genealogical family tree hierarchy for a member.
-     * Ascends to the topmost ancestor and recursively builds the tree downward.
+     * Get the genealogical family tree hierarchy for a member.
+     * Scenario 1: Viewing own family tree (no :id or :id == caller.id) ->
+     *   Traverse upwards to topmost ancestor (Root/Dada/Pardada) and build tree downwards.
+     * Scenario 2: Viewing another member's tree (:id != caller.id) ->
+     *   Case A: If Father exists, Father is root (rootMemberId = father.id) and build downward only
+     *   (Father -> target member + brothers/sisters -> their children -> grandchildren, etc.).
+     *   Case B: If Father does not exist / not linked, target member is root and build downward only.
      * GET /api/v1/member/familyTree/:id?
      */
     async getFamilyTree(request, response) {
-      const caller = request.member;
-      if (!caller || !caller.id) {
+      const caller = request.member || request.user;
+      if (!caller || (!caller.id && !caller.memberId)) {
         return response.status(401).json({ error: "Unauthorized" });
       }
 
-      const targetId = Number(request.params.id || caller.id);
-      if (!Number.isInteger(targetId) || targetId <= 0) {
-        return response
-          .status(400)
-          .json({ error: "Valid member ID is required" });
+      const callerId = Number(caller.id || caller.memberId);
+      if (!Number.isInteger(callerId) || callerId <= 0) {
+        return response.status(401).json({ error: "Unauthorized" });
       }
 
-      // Step 1: Trace up to topmost ancestor
-      let currentId = targetId;
-      const visited = new Set();
-      let rootId = targetId;
+      const rawParamId = request.params?.id;
+      const isIdProvided =
+        rawParamId !== undefined &&
+        rawParamId !== null &&
+        String(rawParamId).trim() !== "";
 
-      while (currentId && !visited.has(currentId) && visited.size < 50) {
-        visited.add(currentId);
-        const parentRes = await pool.query(
-          `SELECT id, "fatherId" FROM members WHERE id = $1 AND COALESCE("isDeleted", false) = false LIMIT 1`,
-          [currentId],
-        );
-        if (parentRes.rowCount === 0) break;
-        const row = parentRes.rows[0];
-        rootId = Number(row.id);
-        if (row.fatherId && !visited.has(Number(row.fatherId))) {
-          currentId = Number(row.fatherId);
-        } else {
-          break;
+      let targetId;
+      if (isIdProvided) {
+        targetId = Number(rawParamId);
+        if (!Number.isInteger(targetId) || targetId <= 0) {
+          return response.status(404).json({ error: "Member not found" });
         }
+      } else {
+        targetId = callerId;
       }
-
-      // Step 2: Fetch entire lineage from root downwards using recursive CTE
-      const lineageQuery = `
-        WITH RECURSIVE family_lineage AS (
-          SELECT 
-            m.id, m."firstName", m."middleName", m."surname",
-            m."firstNameEnglish", m."middleNameEnglish", m."surnameEnglish",
-            m."mobileNumber", m."photo_url", m.gender, m."dateOfBirth",
-            m.business, m.city, m.state, m.country, m.status,
-            m."fatherId", m."sonIds", m."hasAppAccess", m."isClaimed",
-            m."createdBy", m.role,
-            1 as level
-          FROM members m
-          WHERE m.id = $1 AND COALESCE(m."isDeleted", false) = false
-
-          UNION
-
-          SELECT 
-            c.id, c."firstName", c."middleName", c."surname",
-            c."firstNameEnglish", c."middleNameEnglish", c."surnameEnglish",
-            c."mobileNumber", c."photo_url", c.gender, c."dateOfBirth",
-            c.business, c.city, c.state, c.country, c.status,
-            c."fatherId", c."sonIds", c."hasAppAccess", c."isClaimed",
-            c."createdBy", c.role,
-            fl.level + 1 as level
-          FROM members c
-          INNER JOIN family_lineage fl 
-            ON (c."fatherId" = fl.id OR (fl."sonIds" IS NOT NULL AND c.id = ANY(fl."sonIds")))
-          WHERE COALESCE(c."isDeleted", false) = false
-            AND fl.level < 20
-        )
-        SELECT DISTINCT * FROM family_lineage ORDER BY level ASC, id ASC;
-      `;
 
       try {
+        // Step 1: Verify target member exists
+        const targetRes = await pool.query(
+          `SELECT id, "fatherId" FROM members WHERE id = $1 AND COALESCE("isDeleted", false) = false LIMIT 1`,
+          [targetId],
+        );
+
+        if (targetRes.rowCount === 0) {
+          return response.status(404).json({ error: "Member not found" });
+        }
+
+        const targetMember = targetRes.rows[0];
+        const isOwnFamilyTree = !isIdProvided || targetId === callerId;
+        let rootId = targetId;
+
+        if (isOwnFamilyTree) {
+          // Scenario 1: Viewing Own Family Tree
+          // Traverse upwards to topmost ancestor (Root/Dada/Pardada)
+          let currentId = targetId;
+          const visited = new Set();
+
+          while (currentId && !visited.has(currentId) && visited.size < 50) {
+            visited.add(currentId);
+            const parentRes = await pool.query(
+              `SELECT id, "fatherId" FROM members WHERE id = $1 AND COALESCE("isDeleted", false) = false LIMIT 1`,
+              [currentId],
+            );
+            if (parentRes.rowCount === 0) break;
+            const row = parentRes.rows[0];
+            rootId = Number(row.id);
+            if (row.fatherId && !visited.has(Number(row.fatherId))) {
+              currentId = Number(row.fatherId);
+            } else {
+              break;
+            }
+          }
+        } else {
+          // Scenario 2: Viewing Another Member's Profile / Family Tree
+          // Find target member's Father
+          let fatherId = targetMember.fatherId ? Number(targetMember.fatherId) : null;
+          let fatherFound = false;
+
+          if (fatherId) {
+            const fatherRes = await pool.query(
+              `SELECT id, "fatherId" FROM members WHERE id = $1 AND COALESCE("isDeleted", false) = false LIMIT 1`,
+              [fatherId],
+            );
+            if (fatherRes.rowCount > 0) {
+              fatherFound = true;
+              rootId = Number(fatherRes.rows[0].id);
+            }
+          }
+
+          if (!fatherFound) {
+            const fatherBySonRes = await pool.query(
+              `SELECT id, "fatherId" FROM members WHERE $1 = ANY("sonIds") AND COALESCE("isDeleted", false) = false LIMIT 1`,
+              [targetId],
+            );
+            if (fatherBySonRes.rowCount > 0) {
+              fatherFound = true;
+              rootId = Number(fatherBySonRes.rows[0].id);
+            }
+          }
+
+          if (!fatherFound) {
+            // Case B: Father does NOT exist / Not linked in DB
+            // Treat target member himself as root
+            rootId = targetId;
+          }
+        }
+
+        // Step 2: Fetch lineage from root downwards using recursive CTE
+        const lineageQuery = `
+          WITH RECURSIVE family_lineage AS (
+            SELECT 
+              m.id, m."firstName", m."middleName", m."surname",
+              m."firstNameEnglish", m."middleNameEnglish", m."surnameEnglish",
+              m."mobileNumber", m."photo_url", m.gender, m."dateOfBirth",
+              m.business, m.city, m.state, m.country, m.status,
+              m."fatherId", m."sonIds", m."hasAppAccess", m."isClaimed",
+              m."createdBy", m.role,
+              1 as level
+            FROM members m
+            WHERE m.id = $1 AND COALESCE(m."isDeleted", false) = false
+
+            UNION
+
+            SELECT 
+              c.id, c."firstName", c."middleName", c."surname",
+              c."firstNameEnglish", c."middleNameEnglish", c."surnameEnglish",
+              c."mobileNumber", c."photo_url", c.gender, c."dateOfBirth",
+              c.business, c.city, c.state, c.country, c.status,
+              c."fatherId", c."sonIds", c."hasAppAccess", c."isClaimed",
+              c."createdBy", c.role,
+              fl.level + 1 as level
+            FROM members c
+            INNER JOIN family_lineage fl 
+              ON (c."fatherId" = fl.id OR (fl."sonIds" IS NOT NULL AND c.id = ANY(fl."sonIds")))
+            WHERE COALESCE(c."isDeleted", false) = false
+              AND fl.level < 20
+          )
+          SELECT DISTINCT * FROM family_lineage ORDER BY level ASC, id ASC;
+        `;
+
         const result = await pool.query(lineageQuery, [rootId]);
         const rows = result.rows;
 
@@ -3989,6 +4111,8 @@ function memberController(pool) {
 
         for (const m of rows) {
           const id = Number(m.id);
+          if (nodeMap.has(id)) continue;
+
           const fullName = [m.firstName, m.middleName, m.surname]
             .filter(Boolean)
             .join(" ");
@@ -4010,7 +4134,7 @@ function memberController(pool) {
             firstNameEnglish: m.firstNameEnglish,
             middleNameEnglish: m.middleNameEnglish,
             surnameEnglish: m.surnameEnglish,
-            gender: m.gender,
+            gender: normalizeGender(m.gender) || m.gender,
             dateOfBirth: m.dateOfBirth,
             age: calculateAgeFromDob(m.dateOfBirth),
             mobileNumber: m.mobileNumber || null,
@@ -4033,6 +4157,7 @@ function memberController(pool) {
 
         // Link children to parents
         for (const [id, node] of nodeMap.entries()) {
+          let attached = false;
           if (
             node.fatherId &&
             nodeMap.has(node.fatherId) &&
@@ -4042,15 +4167,45 @@ function memberController(pool) {
             if (!parent.children.some((child) => child.id === id)) {
               parent.children.push(node);
             }
+            attached = true;
+          }
+
+          if (!attached) {
+            for (const [, possibleParent] of nodeMap.entries()) {
+              if (
+                possibleParent.id !== id &&
+                Array.isArray(possibleParent.sonIds) &&
+                possibleParent.sonIds.includes(id)
+              ) {
+                if (!possibleParent.children.some((child) => child.id === id)) {
+                  possibleParent.children.push(node);
+                }
+                break;
+              }
+            }
           }
         }
 
         const rootNode = nodeMap.get(rootId);
 
+        function countTreeNodes(node, visitedSet = new Set()) {
+          if (!node || visitedSet.has(node.id)) return 0;
+          visitedSet.add(node.id);
+          let count = 1;
+          if (Array.isArray(node.children)) {
+            for (const child of node.children) {
+              count += countTreeNodes(child, visitedSet);
+            }
+          }
+          return count;
+        }
+
+        const totalMembers = countTreeNodes(rootNode);
+
         return sendSuccess(response, 200, "Family tree fetched successfully", {
           targetMemberId: targetId,
           rootMemberId: rootId,
-          totalMembers: rows.length,
+          totalMembers,
           tree: rootNode || null,
         });
       } catch (err) {

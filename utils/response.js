@@ -18,6 +18,7 @@ function removeSensitiveFields(value) {
 
 function sendSuccess(response, statusCode, message, data = null) {
   return response.status(statusCode).json({
+    status: "success",
     success: true,
     message,
     data: removeSensitiveFields(data),

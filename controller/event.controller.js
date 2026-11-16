@@ -35,6 +35,9 @@ const createEventsTable = `
     video_link TEXT,
     video_links JSONB,
     "createBy" BIGINT REFERENCES members(id) ON DELETE SET NULL,
+    "isActive" BOOLEAN DEFAULT TRUE,
+    "isDeleted" BOOLEAN DEFAULT FALSE,
+    "deletedBy" BIGINT REFERENCES members(id) ON DELETE SET NULL,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     updated_at TIMESTAMPTZ DEFAULT NOW()
   )
@@ -67,6 +70,24 @@ async function ensureEventsTable(pool) {
   );
   await pool.query(
     `CREATE INDEX IF NOT EXISTS idx_events_create_by ON events ("createBy")`,
+  );
+  await pool.query(
+    `ALTER TABLE events ADD COLUMN IF NOT EXISTS "isActive" BOOLEAN DEFAULT TRUE`,
+  );
+  await pool.query(
+    `ALTER TABLE events ADD COLUMN IF NOT EXISTS "isDeleted" BOOLEAN DEFAULT FALSE`,
+  );
+  await pool.query(
+    `ALTER TABLE events ADD COLUMN IF NOT EXISTS "deletedBy" BIGINT REFERENCES members(id) ON DELETE SET NULL`,
+  );
+  await pool.query(
+    `CREATE INDEX IF NOT EXISTS idx_events_is_deleted ON events ("isDeleted")`,
+  );
+  await pool.query(
+    `CREATE INDEX IF NOT EXISTS idx_events_is_active ON events ("isActive")`,
+  );
+  await pool.query(
+    `CREATE INDEX IF NOT EXISTS idx_events_deleted_by ON events ("deletedBy")`,
   );
 }
 
@@ -321,8 +342,8 @@ function eventController(pool) {
 
       try {
         const result = await pool.query(
-          `INSERT INTO events (name, event_date, image_url, image_urls, video_url, video_urls, video_link, video_links, "createBy")
-           VALUES ($1, $2::timestamptz, $3, $4::jsonb, $5, $6::jsonb, $7, $8::jsonb, $9)
+          `INSERT INTO events (name, event_date, image_url, image_urls, video_url, video_urls, video_link, video_links, "createBy", "isActive", "isDeleted")
+           VALUES ($1, $2::timestamptz, $3, $4::jsonb, $5, $6::jsonb, $7, $8::jsonb, $9, TRUE, FALSE)
            RETURNING *`,
           [
             payload.name,
@@ -342,6 +363,9 @@ function eventController(pool) {
         const createdEvent = {
           ...result.rows[0],
           createBy: result.rows[0].createBy ? Number(result.rows[0].createBy) : null,
+          deletedBy: result.rows[0].deletedBy ? Number(result.rows[0].deletedBy) : null,
+          isActive: result.rows[0].isActive ?? true,
+          isDeleted: result.rows[0].isDeleted ?? false,
         };
 
         return sendSuccess(
@@ -366,10 +390,11 @@ function eventController(pool) {
         const offset = (page - 1) * limit;
 
         const query = `
-          SELECT id, name, event_date, image_url, image_urls, video_url, video_urls, video_link, video_links, "createBy", created_at, updated_at,
+          SELECT id, name, event_date, image_url, image_urls, video_url, video_urls, video_link, video_links, "createBy", "isActive", "isDeleted", "deletedBy", created_at, updated_at,
                  COUNT(*) OVER() AS total_count
           FROM events
-           ORDER BY event_date DESC, created_at DESC, id DESC
+          WHERE COALESCE("isDeleted", false) = false
+          ORDER BY event_date DESC, created_at DESC, id DESC
           LIMIT $1 OFFSET $2
         `;
 
@@ -382,6 +407,9 @@ function eventController(pool) {
           return {
             ...rest,
             createBy: rest.createBy ? Number(rest.createBy) : null,
+            deletedBy: rest.deletedBy ? Number(rest.deletedBy) : null,
+            isActive: rest.isActive ?? true,
+            isDeleted: rest.isDeleted ?? false,
           };
         });
 
@@ -404,10 +432,23 @@ function eventController(pool) {
           .json({ error: "Event id must be a positive integer" });
       }
 
+      const deletedBy = request.member?.id
+        ? Number(request.member.id)
+        : request.body?.deletedBy
+          ? Number(request.body.deletedBy)
+          : null;
+
       try {
         const result = await pool.query(
-          `DELETE FROM events WHERE id = $1 RETURNING *`,
-          [eventId],
+          `UPDATE events
+           SET "isDeleted" = TRUE,
+               "isActive" = FALSE,
+               "deletedBy" = $1,
+               updated_at = NOW()
+           WHERE id = $2
+             AND COALESCE("isDeleted", false) = false
+           RETURNING *`,
+          [deletedBy, eventId],
         );
 
         if (result.rowCount === 0) {
@@ -417,6 +458,9 @@ function eventController(pool) {
         const deletedEvent = {
           ...result.rows[0],
           createBy: result.rows[0].createBy ? Number(result.rows[0].createBy) : null,
+          deletedBy: result.rows[0].deletedBy ? Number(result.rows[0].deletedBy) : null,
+          isActive: result.rows[0].isActive ?? false,
+          isDeleted: result.rows[0].isDeleted ?? true,
         };
 
         return sendSuccess(
@@ -442,7 +486,7 @@ function eventController(pool) {
 
       try {
         const existingResult = await pool.query(
-          `SELECT * FROM events WHERE id = $1 LIMIT 1`,
+          `SELECT * FROM events WHERE id = $1 AND COALESCE("isDeleted", false) = false LIMIT 1`,
           [eventId],
         );
 
@@ -575,14 +619,21 @@ function eventController(pool) {
           return response.status(400).json(validationError);
         }
 
+        const isActive =
+          request.body.isActive !== undefined
+            ? request.body.isActive === true || request.body.isActive === "true"
+            : (existingEvent.isActive ?? true);
+
         const result = await pool.query(
           `UPDATE events
            SET name = $1, event_date = $2::timestamptz, image_url = $3,
                image_urls = $4::jsonb, video_url = $5, video_urls = $6::jsonb,
                video_link = $7, video_links = $8::jsonb,
                "createBy" = $9,
+               "isActive" = $10,
                updated_at = NOW()
-             WHERE id = $10
+             WHERE id = $11
+               AND COALESCE("isDeleted", false) = false
            RETURNING *`,
           [
             payload.name,
@@ -596,6 +647,7 @@ function eventController(pool) {
               ? JSON.stringify(payload.videoLinks)
               : null,
             payload.createBy,
+            isActive,
             eventId,
           ],
         );
@@ -605,6 +657,9 @@ function eventController(pool) {
         const updatedEvent = {
           ...result.rows[0],
           createBy: result.rows[0].createBy ? Number(result.rows[0].createBy) : null,
+          deletedBy: result.rows[0].deletedBy ? Number(result.rows[0].deletedBy) : null,
+          isActive: result.rows[0].isActive ?? true,
+          isDeleted: result.rows[0].isDeleted ?? false,
         };
 
         return sendSuccess(

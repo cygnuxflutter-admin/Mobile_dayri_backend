@@ -156,11 +156,11 @@ console.log("=== Running Family Tree and Virtual Member (No Mobile) Unit Tests =
             middleName: params[2],
             surname: params[4],
             mobileNumber: params[6],
-            fatherId: params[22],
-            sonIds: params[21],
-            createdBy: params[24],
-            hasAppAccess: params[25],
-            isClaimed: params[26],
+            fatherId: params[23],
+            sonIds: params[22],
+            createdBy: params[25],
+            hasAppAccess: params[26],
+            isClaimed: params[27],
             created_at: new Date(),
           };
           return { rowCount: 1, rows: [insertedMember] };
@@ -264,9 +264,9 @@ console.log("=== Running Family Tree and Virtual Member (No Mobile) Unit Tests =
             id: 50,
             firstName: params[0],
             surname: params[4],
-            sonIds: params[21],
-            fatherId: params[22],
-            createdBy: params[24],
+            sonIds: params[22],
+            fatherId: params[23],
+            createdBy: params[25],
             hasAppAccess: false,
           };
           return { rowCount: 1, rows: [insertedDada] };
@@ -335,9 +335,9 @@ console.log("=== Running Family Tree and Virtual Member (No Mobile) Unit Tests =
             firstName: params[0],
             middleName: params[2],
             surname: params[4],
-            fatherId: params[22],
-            sonIds: params[21],
-            createdBy: params[24],
+            fatherId: params[23],
+            sonIds: params[22],
+            createdBy: params[25],
             hasAppAccess: false,
           };
           return { rowCount: 1, rows: [insertedBrother] };
@@ -541,85 +541,305 @@ console.log("=== Running Family Tree and Virtual Member (No Mobile) Unit Tests =
     console.log("✔ auth.login: Member with hasAppAccess=false blocked from login");
   }
 
-  // 5. Test getFamilyTree builds hierarchical structure
+  // 5. Test getFamilyTree hierarchy logic
   {
-    const mockLineageRows = [
+    // Mock database for multi-generation family:
+    // Dada (100)
+    //   ├── Father (101)
+    //   │     ├── Target User Ravi (102)
+    //   │     │     └── Son Aarav (103)
+    //   │     └── Brother Suresh (104)
+    //   └── Uncle Mansukhbhai (105)
+    //
+    // Separate member with no father:
+    // Orphan Member (200)
+    //   ├── Child 1 (201)
+    //   └── Child 2 (202)
+
+    const allMembers = [
       {
-        id: 100, // Dada (root)
+        id: 100, // Dada (top ancestor)
         firstName: "Tribhovanbhai",
         middleName: "Ramjibhai",
         surname: "Patel",
         fatherId: null,
-        sonIds: [101],
+        sonIds: [101, 105],
+        gender: "MALE",
         hasAppAccess: false,
-        level: 1,
+        isDeleted: false,
       },
       {
-        id: 101, // Father
+        id: 101, // Father of Ravi & Suresh
         firstName: "Kishorbhai",
         middleName: "Tribhovanbhai",
         surname: "Patel",
         fatherId: 100,
-        sonIds: [102],
+        sonIds: [102, 104],
+        gender: "MALE",
         hasAppAccess: false,
-        level: 2,
+        isDeleted: false,
       },
       {
-        id: 102, // User A
+        id: 105, // Uncle (Father's brother)
+        firstName: "Mansukhbhai",
+        middleName: "Tribhovanbhai",
+        surname: "Patel",
+        fatherId: 100,
+        sonIds: [],
+        gender: "MALE",
+        hasAppAccess: false,
+        isDeleted: false,
+      },
+      {
+        id: 102, // User Ravi
         firstName: "Ravi",
         middleName: "Kishorbhai",
         surname: "Patel",
         fatherId: 101,
         sonIds: [103],
+        gender: "MALE",
         hasAppAccess: true,
-        level: 3,
+        isDeleted: false,
       },
       {
-        id: 103, // Son
+        id: 104, // Brother Suresh
+        firstName: "Suresh",
+        middleName: "Kishorbhai",
+        surname: "Patel",
+        fatherId: 101,
+        sonIds: [],
+        gender: "MALE",
+        hasAppAccess: false,
+        isDeleted: false,
+      },
+      {
+        id: 103, // Son Aarav
         firstName: "Aarav",
         middleName: "Ravi",
         surname: "Patel",
         fatherId: 102,
         sonIds: [],
+        gender: "MALE",
         hasAppAccess: false,
-        level: 4,
+        isDeleted: false,
+      },
+      {
+        id: 200, // Orphan Member (no father)
+        firstName: "Nilesh",
+        middleName: null,
+        surname: "Shah",
+        fatherId: null,
+        sonIds: [201, 202],
+        gender: "MALE",
+        hasAppAccess: true,
+        isDeleted: false,
+      },
+      {
+        id: 201, // Nilesh's Child 1
+        firstName: "Dev",
+        middleName: "Nilesh",
+        surname: "Shah",
+        fatherId: 200,
+        sonIds: [],
+        gender: "MALE",
+        hasAppAccess: false,
+        isDeleted: false,
+      },
+      {
+        id: 202, // Nilesh's Child 2
+        firstName: "Diya",
+        middleName: "Nilesh",
+        surname: "Shah",
+        fatherId: 200,
+        sonIds: [],
+        gender: "FEMALE",
+        hasAppAccess: false,
+        isDeleted: false,
       },
     ];
 
-    const poolTree = {
+    const createPool = () => ({
       query: async (sql, params) => {
         if (sql.includes("SELECT id, \"fatherId\" FROM members")) {
-          // Parent traversal
           const id = params[0];
-          const found = mockLineageRows.find((r) => r.id === id);
+          const found = allMembers.find((r) => r.id === id && !r.isDeleted);
           return { rowCount: found ? 1 : 0, rows: found ? [found] : [] };
         }
         if (sql.includes("WITH RECURSIVE family_lineage")) {
-          return { rowCount: mockLineageRows.length, rows: mockLineageRows };
+          const startId = params[0];
+          // Downward traversal from startId
+          const result = [];
+          const queue = [{ id: startId, level: 1 }];
+          const visited = new Set();
+
+          while (queue.length > 0) {
+            const { id, level } = queue.shift();
+            if (visited.has(id)) continue;
+            visited.add(id);
+
+            const m = allMembers.find((r) => r.id === id && !r.isDeleted);
+            if (!m) continue;
+            result.push({ ...m, level });
+
+            // find children (by fatherId or sonIds)
+            const children = allMembers.filter(
+              (c) =>
+                !c.isDeleted &&
+                (c.fatherId === id || (Array.isArray(m.sonIds) && m.sonIds.includes(c.id))),
+            );
+            for (const child of children) {
+              queue.push({ id: child.id, level: level + 1 });
+            }
+          }
+          return { rowCount: result.length, rows: result };
         }
         return { rowCount: 0, rows: [] };
       },
-    };
+    });
 
-    const ctrlTree = memberController(poolTree);
-    const req = { member: { id: 102 }, params: { id: 102 } };
-    let status = 0;
-    let jsonResp = null;
-    const res = {
-      status: (s) => { status = s; return { json: (j) => { jsonResp = j; } }; },
-    };
+    // 5.1 Scenario 1: Viewing Own Family Tree when :id is provided and equals caller.id
+    {
+      const ctrl = memberController(createPool());
+      const req = { member: { id: 102 }, params: { id: 102 } };
+      let status = 0;
+      let jsonResp = null;
+      await ctrl.getFamilyTree(req, {
+        status: (s) => { status = s; return { json: (j) => { jsonResp = j; } }; },
+      });
 
-    await ctrlTree.getFamilyTree(req, res);
-    assert.strictEqual(status, 200);
-    const tree = jsonResp.data.tree;
-    assert.strictEqual(tree.id, 100); // root is Tribhovanbhai
-    assert.strictEqual(tree.children.length, 1);
-    assert.strictEqual(tree.children[0].id, 101); // Kishorbhai
-    assert.strictEqual(tree.children[0].children.length, 1);
-    assert.strictEqual(tree.children[0].children[0].id, 102); // Ravi (isTargetUser=true)
-    assert.strictEqual(tree.children[0].children[0].isTargetUser, true);
-    assert.strictEqual(tree.children[0].children[0].children[0].id, 103); // Aarav
-    console.log("✔ getFamilyTree: Perfectly built 4-generation hierarchy (Dada -> Father -> User A -> Son)");
+      assert.strictEqual(status, 200);
+      assert.strictEqual(jsonResp.status, "success");
+      assert.strictEqual(jsonResp.data.targetMemberId, 102);
+      assert.strictEqual(jsonResp.data.rootMemberId, 100); // Topmost ancestor Dada
+      assert.strictEqual(jsonResp.data.totalMembers, 6); // Dada + Father + Uncle + Ravi + Suresh + Aarav
+      assert.strictEqual(jsonResp.data.tree.id, 100);
+      assert.strictEqual(jsonResp.data.tree.isTargetUser, false);
+      // Verify target user has isTargetUser: true
+      const fatherNode = jsonResp.data.tree.children.find((c) => c.id === 101);
+      assert(fatherNode);
+      const raviNode = fatherNode.children.find((c) => c.id === 102);
+      assert(raviNode);
+      assert.strictEqual(raviNode.isTargetUser, true);
+      console.log("✔ getFamilyTree (Scenario 1): Viewing own tree with :id == caller.id builds full tree from topmost ancestor Dada (100)");
+    }
+
+    // 5.2 Scenario 1: Viewing Own Family Tree when :id is NOT provided
+    {
+      const ctrl = memberController(createPool());
+      const req = { member: { id: 102 }, params: {} };
+      let status = 0;
+      let jsonResp = null;
+      await ctrl.getFamilyTree(req, {
+        status: (s) => { status = s; return { json: (j) => { jsonResp = j; } }; },
+      });
+
+      assert.strictEqual(status, 200);
+      assert.strictEqual(jsonResp.status, "success");
+      assert.strictEqual(jsonResp.data.targetMemberId, 102);
+      assert.strictEqual(jsonResp.data.rootMemberId, 100); // Topmost ancestor Dada
+      assert.strictEqual(jsonResp.data.totalMembers, 6);
+      console.log("✔ getFamilyTree (Scenario 1): Viewing own tree without :id param defaults to caller and builds complete tree");
+    }
+
+    // 5.3 Scenario 2 Case A: Viewing Another Member's Tree who HAS a Father
+    {
+      const ctrl = memberController(createPool());
+      // Caller is stranger (id 999), requesting target Ravi (102)
+      const req = { member: { id: 999 }, params: { id: 102 } };
+      let status = 0;
+      let jsonResp = null;
+      await ctrl.getFamilyTree(req, {
+        status: (s) => { status = s; return { json: (j) => { jsonResp = j; } }; },
+      });
+
+      assert.strictEqual(status, 200);
+      assert.strictEqual(jsonResp.status, "success");
+      assert.strictEqual(jsonResp.data.targetMemberId, 102);
+      assert.strictEqual(jsonResp.data.rootMemberId, 101); // Father Kishorbhai, NOT Dada 100!
+      assert.strictEqual(jsonResp.data.totalMembers, 4); // Father(101) + Ravi(102) + Suresh(104) + Aarav(103)
+
+      const tree = jsonResp.data.tree;
+      assert.strictEqual(tree.id, 101); // Root is Father
+      assert.strictEqual(tree.isTargetUser, false);
+      assert.strictEqual(tree.children.length, 2); // Ravi and Brother Suresh
+
+      const targetChild = tree.children.find((c) => c.id === 102);
+      assert(targetChild);
+      assert.strictEqual(targetChild.isTargetUser, true);
+      assert.strictEqual(targetChild.children.length, 1);
+      assert.strictEqual(targetChild.children[0].id, 103); // Aarav
+      assert.strictEqual(targetChild.children[0].isTargetUser, false);
+
+      const brotherChild = tree.children.find((c) => c.id === 104);
+      assert(brotherChild);
+      assert.strictEqual(brotherChild.isTargetUser, false);
+      assert.strictEqual(brotherChild.children.length, 0);
+
+      // Verify Dada (100) and Uncle Mansukhbhai (105) are NOT in the tree
+      assert.strictEqual(tree.children.some((c) => c.id === 100 || c.id === 105), false);
+      console.log("✔ getFamilyTree (Scenario 2 Case A): Viewing another member with Father roots at Father (101) and builds downward only (no Dada, no Uncle)");
+    }
+
+    // 5.4 Scenario 2 Case B: Viewing Another Member's Tree who DOES NOT HAVE a Father in DB
+    {
+      const ctrl = memberController(createPool());
+      // Caller 999 views target Nilesh (200), who has fatherId = null
+      const req = { member: { id: 999 }, params: { id: 200 } };
+      let status = 0;
+      let jsonResp = null;
+      await ctrl.getFamilyTree(req, {
+        status: (s) => { status = s; return { json: (j) => { jsonResp = j; } }; },
+      });
+
+      assert.strictEqual(status, 200);
+      assert.strictEqual(jsonResp.status, "success");
+      assert.strictEqual(jsonResp.data.targetMemberId, 200);
+      assert.strictEqual(jsonResp.data.rootMemberId, 200); // Fallback: target member himself
+      assert.strictEqual(jsonResp.data.totalMembers, 3); // Nilesh (200) + Dev (201) + Diya (202)
+
+      const tree = jsonResp.data.tree;
+      assert.strictEqual(tree.id, 200);
+      assert.strictEqual(tree.isTargetUser, true);
+      assert.strictEqual(tree.children.length, 2);
+      assert.strictEqual(tree.children[0].id, 201);
+      assert.strictEqual(tree.children[1].id, 202);
+      console.log("✔ getFamilyTree (Scenario 2 Case B): Viewing another member without Father roots at target member himself");
+    }
+
+    // 5.5 Error handling: Invalid or non-existent member ID returns 404
+    {
+      const ctrl = memberController(createPool());
+
+      // Non-existent ID
+      const reqNotFound = { member: { id: 999 }, params: { id: 8888 } };
+      let status404 = 0;
+      let json404 = null;
+      await ctrl.getFamilyTree(reqNotFound, {
+        status: (s) => { status404 = s; return { json: (j) => { json404 = j; } }; },
+      });
+      assert.strictEqual(status404, 404);
+      assert.strictEqual(json404.error, "Member not found");
+
+      // Invalid ID string
+      const reqInvalid = { member: { id: 999 }, params: { id: "invalid_id" } };
+      let statusInv = 0;
+      let jsonInv = null;
+      await ctrl.getFamilyTree(reqInvalid, {
+        status: (s) => { statusInv = s; return { json: (j) => { jsonInv = j; } }; },
+      });
+      assert.strictEqual(statusInv, 404);
+      assert.strictEqual(jsonInv.error, "Member not found");
+
+      // Unauthorized caller
+      const reqUnauth = { member: null, params: {} };
+      let statusUnauth = 0;
+      await ctrl.getFamilyTree(reqUnauth, {
+        status: (s) => { statusUnauth = s; return { json: () => {} }; },
+      });
+      assert.strictEqual(statusUnauth, 401);
+
+      console.log("✔ getFamilyTree (Error Handling): Invalid/non-existent IDs return 404 and unauthorized callers return 401");
+    }
   }
 
   console.log("\n ALL TESTS PASSED SUCCESSFULLY! ✨");

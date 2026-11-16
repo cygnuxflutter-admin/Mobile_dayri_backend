@@ -9,6 +9,7 @@ function createNotificationRoutes(pool) {
   router.post('/addNotification', authMiddleware(pool), authorizeRoles('SUPERADMIN', 'ADMIN'), notificationUpload.array('photos', 5), controller.addNotification);
   router.post('/updateNotification/:id', authMiddleware(pool), authorizeRoles('SUPERADMIN', 'ADMIN'), notificationUpload.array('photos', 5), controller.updateNotification);
   router.post('/setNotificationActive/:id', authMiddleware(pool), authorizeRoles('SUPERADMIN', 'ADMIN'), controller.setNotificationActive);
+  router.delete('/deleteNotification/:id', authMiddleware(pool), authorizeRoles('SUPERADMIN', 'ADMIN'), controller.deleteNotification);
   router.post('/deleteNotification/:id', authMiddleware(pool), authorizeRoles('SUPERADMIN', 'ADMIN'), controller.deleteNotification);
   router.get('/getNotifications', authMiddleware(pool), controller.getAllNotifications);
   router.get('/getNotification/:id', authMiddleware(pool), controller.getNotificationById);

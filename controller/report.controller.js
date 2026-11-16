@@ -49,10 +49,10 @@ function reportController(pool) {
         const malePct = genderRow.total ? Math.round((genderRow.male / genderRow.total) * 100) : 0;
         const femalePct = genderRow.total ? Math.round((genderRow.female / genderRow.total) * 100) : 0;
 
-        const eventsRes = await pool.query('SELECT COUNT(*)::int AS events FROM events');
+        const eventsRes = await pool.query('SELECT COUNT(*)::int AS events FROM events WHERE COALESCE("isDeleted", false) = false');
         const eventsHeld = Number(eventsRes.rows[0]?.events || 0);
 
-        const notifRes = await pool.query('SELECT COUNT(*)::int AS notifications FROM notifications');
+        const notifRes = await pool.query('SELECT COUNT(*)::int AS notifications FROM notifications WHERE COALESCE("isDeleted", false) = false');
         const alertsSent = Number(notifRes.rows[0]?.notifications || 0);
 
         const newMonthRes = await pool.query(`

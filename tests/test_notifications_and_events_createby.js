@@ -321,6 +321,23 @@ console.log("=== Running Notifications & Events createBy Tests ===");
         };
       }
 
+      if (sql.includes("UPDATE events") && sql.includes('"isDeleted" = TRUE')) {
+        return {
+          rowCount: 1,
+          rows: [
+            {
+              id: "1",
+              name: "Deleted Event",
+              createBy: "33",
+              isActive: false,
+              isDeleted: true,
+              deletedBy: params ? params[0] : null,
+              updated_at: new Date().toISOString(),
+            },
+          ],
+        };
+      }
+
       if (sql.includes("UPDATE events") && sql.includes("RETURNING *")) {
         return {
           rowCount: 1,
