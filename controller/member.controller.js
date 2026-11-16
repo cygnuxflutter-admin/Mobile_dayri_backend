@@ -4306,6 +4306,37 @@ function memberController(pool) {
           .json({ error: "Failed to fetch my family: " + err.message });
       }
     },
+
+    async updateFcmToken(request, response) {
+      const callerId = Number(request.member?.id);
+      const fcmToken = request.body.fcmToken ?? request.body.fcm_token;
+
+      if (!fcmToken || typeof fcmToken !== "string" || !fcmToken.trim()) {
+        return response.status(400).json({ error: "Valid fcmToken is required" });
+      }
+
+      try {
+        const result = await pool.query(
+          `UPDATE members
+           SET "fcmToken" = $1, "updated_at" = NOW()
+           WHERE id = $2 AND COALESCE("isDeleted", false) = false
+           RETURNING id, "fcmToken"`,
+          [fcmToken.trim(), callerId],
+        );
+
+        if (result.rowCount === 0) {
+          return response.status(404).json({ error: "Member not found" });
+        }
+
+        return sendSuccess(response, 200, "FCM token updated successfully", {
+          id: result.rows[0].id,
+          fcmToken: result.rows[0].fcmToken,
+        });
+      } catch (error) {
+        console.error("Failed to update FCM token:", error.message);
+        return response.status(500).json({ error: "Failed to update FCM token" });
+      }
+    },
   };
 }
 

@@ -45,6 +45,9 @@ async function sendPushNotification(fcmToken, { title, body, data = {} }) {
   for (const [key, value] of Object.entries(data)) {
     stringifiedData[key] = value !== null && value !== undefined ? String(value) : "";
   }
+  if (!stringifiedData.title) stringifiedData.title = String(title || "");
+  if (!stringifiedData.body) stringifiedData.body = String(body || "");
+  if (!stringifiedData.click_action) stringifiedData.click_action = "FLUTTER_NOTIFICATION_CLICK";
 
   const message = {
     token: fcmToken.trim(),
@@ -53,14 +56,42 @@ async function sendPushNotification(fcmToken, { title, body, data = {} }) {
       body,
     },
     data: stringifiedData,
+    android: {
+      priority: "high",
+      notification: {
+        title,
+        body,
+        sound: "default",
+        defaultSound: true,
+        defaultVibrateTimings: true,
+        priority: "high",
+        clickAction: "FLUTTER_NOTIFICATION_CLICK",
+      },
+    },
+    apns: {
+      payload: {
+        aps: {
+          alert: {
+            title,
+            body,
+          },
+          sound: "default",
+          badge: 1,
+          contentAvailable: true,
+        },
+      },
+      headers: {
+        "apns-priority": "10",
+      },
+    },
   };
 
   try {
     const response = await messaging.send(message);
-    console.log("FCM notification sent successfully:", response);
+    console.log("[FCM] Single notification sent successfully:", response);
     return response;
   } catch (error) {
-    console.error("Error sending FCM notification to token:", fcmToken, error.message);
+    console.error("[FCM] Error sending notification to token:", fcmToken, error.message);
     return null;
   }
 }
@@ -100,6 +131,9 @@ async function sendMulticastNotification(fcmTokens, { title, body, data = {} }) 
   for (const [key, value] of Object.entries(data)) {
     stringifiedData[key] = value !== null && value !== undefined ? String(value) : "";
   }
+  if (!stringifiedData.title) stringifiedData.title = String(title || "");
+  if (!stringifiedData.body) stringifiedData.body = String(body || "");
+  if (!stringifiedData.click_action) stringifiedData.click_action = "FLUTTER_NOTIFICATION_CLICK";
 
   const batchSize = 500;
   const results = [];
@@ -113,6 +147,34 @@ async function sendMulticastNotification(fcmTokens, { title, body, data = {} }) 
         body,
       },
       data: stringifiedData,
+      android: {
+        priority: "high",
+        notification: {
+          title,
+          body,
+          sound: "default",
+          defaultSound: true,
+          defaultVibrateTimings: true,
+          priority: "high",
+          clickAction: "FLUTTER_NOTIFICATION_CLICK",
+        },
+      },
+      apns: {
+        payload: {
+          aps: {
+            alert: {
+              title,
+              body,
+            },
+            sound: "default",
+            badge: 1,
+            contentAvailable: true,
+          },
+        },
+        headers: {
+          "apns-priority": "10",
+        },
+      },
     };
 
     try {
@@ -130,15 +192,28 @@ async function sendMulticastNotification(fcmTokens, { title, body, data = {} }) 
         response = {
           successCount: individual.filter((r) => !r.error).length,
           failureCount: individual.filter((r) => r.error).length,
+          responses: individual.map((r) => ({ success: !r.error, error: r.error })),
         };
       }
 
       console.log(
-        `FCM multicast sent to ${batchTokens.length} devices. Success: ${response?.successCount || 0}, Failure: ${response?.failureCount || 0}`
+        `[FCM] Multicast sent to ${batchTokens.length} devices. Success: ${response?.successCount || 0}, Failure: ${response?.failureCount || 0}`
       );
+
+      if (Array.isArray(response?.responses)) {
+        response.responses.forEach((resp, idx) => {
+          const tokenPreview = batchTokens[idx] ? batchTokens[idx].substring(0, 20) + "..." : "unknown";
+          if (resp.success) {
+            console.log(`[FCM] ✓ Delivered to token: ${tokenPreview} (messageId: ${resp.messageId})`);
+          } else {
+            console.error(`[FCM] ✗ Failed token: ${tokenPreview} | Code: ${resp.error?.code} | Message: ${resp.error?.message}`);
+          }
+        });
+      }
+
       results.push(response);
     } catch (error) {
-      console.error("Error sending FCM multicast notification:", error.message);
+      console.error("[FCM] Error sending multicast notification:", error.message);
     }
   }
 
@@ -172,17 +247,22 @@ async function sendPushToAllMembers(pool, { title, body, data = {}, excludeMembe
 
     const result = await pool.query(query, params);
     const tokens = result.rows
-      .map((row) => (row.fcmToken ? String(row.fcmToken).trim() : null))
+      .map((row) => {
+        const raw = row.fcmToken || row.fcmtoken || Object.values(row)[0];
+        return raw ? String(raw).trim() : null;
+      })
       .filter(Boolean);
 
+    console.log(`[FCM] Found ${tokens.length} active member token(s) to notify.`);
+
     if (tokens.length === 0) {
-      console.log("No active FCM tokens found for members. Skipping push notification.");
+      console.warn("[FCM] No active members with valid fcmToken found in database. Push notification skipped.");
       return null;
     }
 
     return await sendMulticastNotification(tokens, { title, body, data });
   } catch (error) {
-    console.error("Failed to send push notification to all members:", error.message);
+    console.error("[FCM] Failed to send push notification to all members:", error.message);
     return null;
   }
 }

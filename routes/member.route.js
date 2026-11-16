@@ -135,6 +135,11 @@ function createMemberRoutes(pool) {
     flexibleMemberPhotoUpload,
     controller.updateProfile,
   );
+  router.post(
+    "/updateFcmToken",
+    authMiddleware(pool),
+    controller.updateFcmToken,
+  );
   router.get("/getMember/:id", authMiddleware(pool), controller.getMemberById);
   router.post(
     "/setMemberActive/:id",
