@@ -3,6 +3,7 @@ const path = require("path");
 const multer = require("multer");
 const { sendSuccess } = require("../utils/response");
 const { videoUploadController } = require("./videoUpload.controller");
+const { sendPushToAllMembers } = require("../utils/fcm.service");
 
 const uploadDir = path.join(__dirname, "..", "uploads", "events");
 if (!fs.existsSync(uploadDir)) {
@@ -367,6 +368,27 @@ function eventController(pool) {
           isActive: result.rows[0].isActive ?? true,
           isDeleted: result.rows[0].isDeleted ?? false,
         };
+
+        // Broadcast push notification to all users via FCM
+        try {
+          const eventDateStr = createdEvent.event_date
+            ? new Date(createdEvent.event_date).toLocaleDateString("en-GB")
+            : "";
+          await sendPushToAllMembers(pool, {
+            title: `New Event: ${createdEvent.name}`,
+            body: eventDateStr
+              ? `A new event "${createdEvent.name}" has been scheduled for ${eventDateStr}.`
+              : `A new event "${createdEvent.name}" has been scheduled.`,
+            data: {
+              type: "EVENT",
+              eventId: String(createdEvent.id),
+              name: String(createdEvent.name || ""),
+              eventDate: String(createdEvent.event_date || ""),
+            },
+          });
+        } catch (fcmErr) {
+          console.error("Failed to broadcast event push notification:", fcmErr.message);
+        }
 
         return sendSuccess(
           response,

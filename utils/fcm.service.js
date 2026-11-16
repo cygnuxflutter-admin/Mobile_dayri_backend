@@ -65,6 +65,130 @@ async function sendPushNotification(fcmToken, { title, body, data = {} }) {
   }
 }
 
+/**
+ * Send push notification to multiple device tokens (in batches of 500).
+ * @param {string[]} fcmTokens 
+ * @param {object} options
+ * @param {string} options.title
+ * @param {string} options.body
+ * @param {object} [options.data]
+ */
+async function sendMulticastNotification(fcmTokens, { title, body, data = {} }) {
+  if (!messaging) {
+    console.warn("Firebase messaging not initialized. Skipping multicast push notification.");
+    return null;
+  }
+
+  if (!Array.isArray(fcmTokens) || fcmTokens.length === 0) {
+    return null;
+  }
+
+  // Filter unique valid non-empty tokens
+  const validTokens = Array.from(
+    new Set(
+      fcmTokens
+        .filter((t) => typeof t === "string" && t.trim().length > 0)
+        .map((t) => t.trim())
+    )
+  );
+
+  if (validTokens.length === 0) {
+    return null;
+  }
+
+  const stringifiedData = {};
+  for (const [key, value] of Object.entries(data)) {
+    stringifiedData[key] = value !== null && value !== undefined ? String(value) : "";
+  }
+
+  const batchSize = 500;
+  const results = [];
+
+  for (let i = 0; i < validTokens.length; i += batchSize) {
+    const batchTokens = validTokens.slice(i, i + batchSize);
+    const message = {
+      tokens: batchTokens,
+      notification: {
+        title,
+        body,
+      },
+      data: stringifiedData,
+    };
+
+    try {
+      let response;
+      if (typeof messaging.sendEachForMulticast === "function") {
+        response = await messaging.sendEachForMulticast(message);
+      } else if (typeof messaging.sendMulticast === "function") {
+        response = await messaging.sendMulticast(message);
+      } else {
+        const individual = await Promise.all(
+          batchTokens.map((token) =>
+            messaging.send({ ...message, token, tokens: undefined }).catch((err) => ({ error: err }))
+          )
+        );
+        response = {
+          successCount: individual.filter((r) => !r.error).length,
+          failureCount: individual.filter((r) => r.error).length,
+        };
+      }
+
+      console.log(
+        `FCM multicast sent to ${batchTokens.length} devices. Success: ${response?.successCount || 0}, Failure: ${response?.failureCount || 0}`
+      );
+      results.push(response);
+    } catch (error) {
+      console.error("Error sending FCM multicast notification:", error.message);
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Fetch all active, non-deleted members' FCM tokens and send push notification.
+ * @param {object} pool PostgreSQL pool
+ * @param {object} payload
+ * @param {string} payload.title
+ * @param {string} payload.body
+ * @param {object} [payload.data]
+ * @param {number} [payload.excludeMemberId]
+ */
+async function sendPushToAllMembers(pool, { title, body, data = {}, excludeMemberId = null }) {
+  try {
+    let query = `
+      SELECT DISTINCT "fcmToken"
+      FROM members
+      WHERE "fcmToken" IS NOT NULL
+        AND TRIM("fcmToken") != ''
+        AND COALESCE("isDeleted", false) = false
+        AND COALESCE("isActive", true) = true
+    `;
+    const params = [];
+    if (excludeMemberId) {
+      params.push(excludeMemberId);
+      query += ` AND id != $1`;
+    }
+
+    const result = await pool.query(query, params);
+    const tokens = result.rows
+      .map((row) => (row.fcmToken ? String(row.fcmToken).trim() : null))
+      .filter(Boolean);
+
+    if (tokens.length === 0) {
+      console.log("No active FCM tokens found for members. Skipping push notification.");
+      return null;
+    }
+
+    return await sendMulticastNotification(tokens, { title, body, data });
+  } catch (error) {
+    console.error("Failed to send push notification to all members:", error.message);
+    return null;
+  }
+}
+
 module.exports = {
   sendPushNotification,
+  sendMulticastNotification,
+  sendPushToAllMembers,
 };

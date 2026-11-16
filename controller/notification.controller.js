@@ -2,6 +2,7 @@ const fs = require("fs");
 const path = require("path");
 const multer = require("multer");
 const { sendSuccess } = require("../utils/response");
+const { sendPushToAllMembers } = require("../utils/fcm.service");
 
 const uploadDir = path.join(__dirname, "..", "uploads", "notifications");
 if (!fs.existsSync(uploadDir)) {
@@ -249,6 +250,22 @@ function notificationController(pool) {
           isActive: result.rows[0].isActive ?? result.rows[0].is_active ?? true,
           isDeleted: result.rows[0].isDeleted ?? false,
         };
+
+        // Broadcast push notification to all users via FCM
+        try {
+          await sendPushToAllMembers(pool, {
+            title: createdNotification.title || "New Notification",
+            body: createdNotification.message || "You have a new announcement.",
+            data: {
+              type: "NOTIFICATION",
+              notificationId: String(createdNotification.id),
+              title: String(createdNotification.title || ""),
+              notifyType: String(createdNotification.notify_type || ""),
+            },
+          });
+        } catch (fcmErr) {
+          console.error("Failed to broadcast notification push:", fcmErr.message);
+        }
 
         return sendSuccess(
           response,
