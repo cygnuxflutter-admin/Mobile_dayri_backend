@@ -840,6 +840,244 @@ console.log("=== Running Family Tree and Virtual Member (No Mobile) Unit Tests =
 
       console.log("✔ getFamilyTree (Error Handling): Invalid/non-existent IDs return 404 and unauthorized callers return 401");
     }
+
+    // 5.6 Sorting logic: DOB oldest-to-youngest first, then missing/invalid DOB by created_at ascending, recursively across all levels
+    {
+      const sortingMembers = [
+        {
+          id: 300, // User A (Father)
+          firstName: "UserA",
+          surname: "Patel",
+          fatherId: null,
+          sonIds: [301, 302, 303, 304, 305],
+          dateOfBirth: "1965-01-01",
+          created_at: "2025-01-01T00:00:00Z",
+          gender: "MALE",
+          isDeleted: false,
+        },
+        {
+          id: 301, // SON 1 => DOB attached (youngest of DOB group, DD-MM-YYYY format)
+          firstName: "Son1",
+          surname: "Patel",
+          fatherId: 300,
+          sonIds: [311, 312, 313, 314],
+          dateOfBirth: "15-03-1995",
+          created_at: "2026-01-01T10:00:00Z",
+          gender: "MALE",
+          isDeleted: false,
+        },
+        {
+          id: 302, // SON 2 => DOB attached (oldest)
+          firstName: "Son2",
+          surname: "Patel",
+          fatherId: 300,
+          sonIds: [321, 322],
+          dateOfBirth: "1990-07-20",
+          created_at: "2026-01-02T10:00:00Z",
+          gender: "MALE",
+          isDeleted: false,
+        },
+        {
+          id: 303, // SON 3 => DOB NOT attached (empty string, created later)
+          firstName: "Son3",
+          surname: "Patel",
+          fatherId: 300,
+          sonIds: [],
+          dateOfBirth: "",
+          created_at: "2026-01-05T10:00:00Z",
+          gender: "MALE",
+          isDeleted: false,
+        },
+        {
+          id: 304, // SON 4 => DOB NOT attached (null, created earlier)
+          firstName: "Son4",
+          surname: "Patel",
+          fatherId: 300,
+          sonIds: [],
+          dateOfBirth: null,
+          created_at: "2026-01-03T10:00:00Z",
+          gender: "MALE",
+          isDeleted: false,
+        },
+        {
+          id: 305, // SON 5 => DOB attached (middle age)
+          firstName: "Son5",
+          surname: "Patel",
+          fatherId: 300,
+          sonIds: [],
+          dateOfBirth: "1992-11-01",
+          created_at: "2026-01-04T10:00:00Z",
+          gender: "MALE",
+          isDeleted: false,
+        },
+        // Grandsons under SON 1 (301)
+        {
+          id: 311, // No DOB, created later
+          firstName: "GS1_NoDobLate",
+          surname: "Patel",
+          fatherId: 301,
+          sonIds: [],
+          dateOfBirth: "",
+          created_at: "2026-03-10T10:00:00Z",
+          gender: "MALE",
+          isDeleted: false,
+        },
+        {
+          id: 312, // DOB younger
+          firstName: "GS1_Younger",
+          surname: "Patel",
+          fatherId: 301,
+          sonIds: [],
+          dateOfBirth: "2020-05-10",
+          created_at: "2026-03-01T10:00:00Z",
+          gender: "MALE",
+          isDeleted: false,
+        },
+        {
+          id: 313, // Invalid DOB -> treated as missing DOB, created earlier than 311
+          firstName: "GS1_InvalidDobEarly",
+          surname: "Patel",
+          fatherId: 301,
+          sonIds: [],
+          dateOfBirth: "31-02-2019",
+          created_at: "2026-03-05T10:00:00Z",
+          gender: "MALE",
+          isDeleted: false,
+        },
+        {
+          id: 314, // DOB older
+          firstName: "GS1_Older",
+          surname: "Patel",
+          fatherId: 301,
+          sonIds: [],
+          dateOfBirth: "10/01/2018",
+          created_at: "2026-03-08T10:00:00Z",
+          gender: "MALE",
+          isDeleted: false,
+        },
+        // Twins under SON 2 (302) -> same DOB, tie-break by created_at ascending
+        {
+          id: 321,
+          firstName: "TwinLaterCreated",
+          surname: "Patel",
+          fatherId: 302,
+          sonIds: [],
+          dateOfBirth: "2015-06-15",
+          created_at: "2026-02-02T10:00:00Z",
+          gender: "MALE",
+          isDeleted: false,
+        },
+        {
+          id: 322,
+          firstName: "TwinEarlierCreated",
+          surname: "Patel",
+          fatherId: 302,
+          sonIds: [],
+          dateOfBirth: "15-06-2015",
+          created_at: "2026-02-01T10:00:00Z",
+          gender: "MALE",
+          isDeleted: false,
+        },
+      ];
+
+      const sortingPool = {
+        query: async (sql, params) => {
+          if (sql.includes("SELECT id, \"fatherId\" FROM members")) {
+            const id = params[0];
+            const found = sortingMembers.find((r) => r.id === id && !r.isDeleted);
+            return { rowCount: found ? 1 : 0, rows: found ? [found] : [] };
+          }
+          if (sql.includes("WITH RECURSIVE family_lineage")) {
+            assert(sql.includes('m."created_at"') && sql.includes('c."created_at"'));
+            const startId = params[0];
+            const result = [];
+            const queue = [{ id: startId, level: 1 }];
+            const visited = new Set();
+
+            while (queue.length > 0) {
+              const { id, level } = queue.shift();
+              if (visited.has(id)) continue;
+              visited.add(id);
+
+              const m = sortingMembers.find((r) => r.id === id && !r.isDeleted);
+              if (!m) continue;
+              result.push({ ...m, level });
+
+              const children = sortingMembers.filter(
+                (c) =>
+                  !c.isDeleted &&
+                  (c.fatherId === id || (Array.isArray(m.sonIds) && m.sonIds.includes(c.id))),
+              );
+              for (const child of children) {
+                queue.push({ id: child.id, level: level + 1 });
+              }
+            }
+            return { rowCount: result.length, rows: result };
+          }
+          if (sql.includes('FROM members WHERE id = $1 AND COALESCE("isDeleted", false) = false LIMIT 1')) {
+            const found = sortingMembers.find((r) => r.id === params[0] && !r.isDeleted);
+            return { rowCount: found ? 1 : 0, rows: found ? [found] : [] };
+          }
+          if (sql.includes("FROM members WHERE id = ANY($1)")) {
+            const ids = params[0];
+            const rows = sortingMembers.filter((r) => ids.includes(r.id) && !r.isDeleted);
+            return { rowCount: rows.length, rows };
+          }
+          return { rowCount: 0, rows: [] };
+        },
+      };
+
+      const ctrl = memberController(sortingPool);
+
+      // Test getFamilyTree recursive sorting
+      const reqTree = { member: { id: 300 }, params: {} };
+      let statusTree = 0;
+      let jsonTree = null;
+      await ctrl.getFamilyTree(reqTree, {
+        status: (s) => { statusTree = s; return { json: (j) => { jsonTree = j; } }; },
+      });
+
+      assert.strictEqual(statusTree, 200);
+      const tree = jsonTree.data.tree;
+      assert.strictEqual(tree.id, 300);
+
+      // Level 1 sons: DOB oldest->youngest (302 [1990], 305 [1992], 301 [1995]), then no-DOB created_at ASC (304 [Jan 3], 303 [Jan 5])
+      assert.deepStrictEqual(
+        tree.children.map((c) => c.id),
+        [302, 305, 301, 304, 303],
+      );
+
+      // Level 2 under Son 2 (302): same DOB tie-break by created_at ASC -> 322 then 321
+      const son2Node = tree.children[0];
+      assert.deepStrictEqual(
+        son2Node.children.map((c) => c.id),
+        [322, 321],
+      );
+
+      // Level 2 under Son 1 (301): DOB oldest->youngest (314 [2018], 312 [2020]), then invalid/missing DOB by created_at ASC (313 [Mar 5], 311 [Mar 10])
+      const son1Node = tree.children[2];
+      assert.deepStrictEqual(
+        son1Node.children.map((c) => c.id),
+        [314, 312, 313, 311],
+      );
+
+      console.log("✔ getFamilyTree (Sorting): Sons and grandchildren sorted oldest-to-youngest by DOB first, then missing/invalid DOB by created_at ascending");
+
+      // Test getMyFamily sons sorting matches the same logic
+      const reqMyFamily = { member: { id: 300 } };
+      let statusMyFamily = 0;
+      let jsonMyFamily = null;
+      await ctrl.getMyFamily(reqMyFamily, {
+        status: (s) => { statusMyFamily = s; return { json: (j) => { jsonMyFamily = j; } }; },
+      });
+
+      assert.strictEqual(statusMyFamily, 200);
+      assert.deepStrictEqual(
+        jsonMyFamily.data.sons.map((s) => s.id),
+        [302, 305, 301, 304, 303],
+      );
+      console.log("✔ getMyFamily (Sorting): Direct sons sorted consistently by DOB oldest-to-youngest then created_at ascending");
+    }
   }
 
   console.log("\n ALL TESTS PASSED SUCCESSFULLY! ✨");

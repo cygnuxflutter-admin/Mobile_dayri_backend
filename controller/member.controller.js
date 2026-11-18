@@ -295,6 +295,119 @@ function withComputedAge(member) {
   };
 }
 
+function parseDateOfBirthTimestamp(dateOfBirth) {
+  if (dateOfBirth === null || dateOfBirth === undefined) return null;
+  if (dateOfBirth instanceof Date) {
+    const time = dateOfBirth.getTime();
+    return Number.isNaN(time) ? null : time;
+  }
+
+  const value = String(dateOfBirth).trim();
+  if (!value) return null;
+
+  let year;
+  let month;
+  let day;
+
+  const isoDateMatch = value.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})(?:$|T|\s)/);
+  const dmyDateMatch = value.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);
+
+  if (isoDateMatch) {
+    year = Number(isoDateMatch[1]);
+    month = Number(isoDateMatch[2]);
+    day = Number(isoDateMatch[3]);
+  } else if (dmyDateMatch) {
+    day = Number(dmyDateMatch[1]);
+    month = Number(dmyDateMatch[2]);
+    year = Number(dmyDateMatch[3]);
+  } else if (/\d{4}/.test(value)) {
+    const parsed = new Date(value);
+    const time = parsed.getTime();
+    return Number.isNaN(time) ? null : time;
+  } else {
+    return null;
+  }
+
+  if (
+    !Number.isInteger(year) ||
+    !Number.isInteger(month) ||
+    !Number.isInteger(day) ||
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > 31
+  ) {
+    return null;
+  }
+
+  const utcDate = new Date(Date.UTC(year, month - 1, day));
+  if (
+    utcDate.getUTCFullYear() !== year ||
+    utcDate.getUTCMonth() !== month - 1 ||
+    utcDate.getUTCDate() !== day
+  ) {
+    return null;
+  }
+
+  return utcDate.getTime();
+}
+
+function parseTimestamp(value) {
+  if (value === null || value === undefined) return null;
+  if (value instanceof Date) {
+    const time = value.getTime();
+    return Number.isNaN(time) ? null : time;
+  }
+
+  const str = String(value).trim();
+  if (!str) return null;
+  const parsed = new Date(str);
+  const time = parsed.getTime();
+  return Number.isNaN(time) ? null : time;
+}
+
+function compareFamilyMembersByAgeAndCreatedAt(a, b) {
+  const dobA = parseDateOfBirthTimestamp(a?.dateOfBirth ?? a?.DateOfBirth);
+  const dobB = parseDateOfBirthTimestamp(b?.dateOfBirth ?? b?.DateOfBirth);
+
+  const hasDobA = dobA !== null;
+  const hasDobB = dobB !== null;
+
+  // Members with a valid DOB always come before members without DOB
+  if (hasDobA && !hasDobB) return -1;
+  if (!hasDobA && hasDobB) return 1;
+
+  // Both have DOB -> oldest to youngest (DOB ascending)
+  if (hasDobA && hasDobB && dobA !== dobB) {
+    return dobA - dobB;
+  }
+
+  // Members without DOB (or identical DOB tie-breaker) -> created_at ascending
+  const createdA = parseTimestamp(a?.createdAt ?? a?.created_at);
+  const createdB = parseTimestamp(b?.createdAt ?? b?.created_at);
+
+  if (createdA !== null && createdB !== null && createdA !== createdB) {
+    return createdA - createdB;
+  }
+  if (createdA !== null && createdB === null) return -1;
+  if (createdA === null && createdB !== null) return 1;
+
+  // Final deterministic tie-breaker by numeric ID ascending
+  return Number(a?.id || 0) - Number(b?.id || 0);
+}
+
+function sortFamilyTreeChildren(node, visitedSet = new Set()) {
+  if (!node || visitedSet.has(node.id)) return;
+  visitedSet.add(node.id);
+
+  if (Array.isArray(node.children) && node.children.length > 0) {
+    node.children.sort(compareFamilyMembersByAgeAndCreatedAt);
+    for (const child of node.children) {
+      sortFamilyTreeChildren(child, visitedSet);
+    }
+  }
+}
+
 function buildRegistrationPayload(body, file) {
   const sanitizedBody = { ...(body || {}) };
   delete sanitizedBody.fcmToken;
@@ -4073,7 +4186,7 @@ function memberController(pool) {
               m."mobileNumber", m."photo_url", m.gender, m."dateOfBirth",
               m.business, m.city, m.state, m.country, m.status,
               m."fatherId", m."sonIds", m."hasAppAccess", m."isClaimed",
-              m."createdBy", m.role,
+              m."createdBy", m.role, m."created_at",
               1 as level
             FROM members m
             WHERE m.id = $1 AND COALESCE(m."isDeleted", false) = false
@@ -4086,7 +4199,7 @@ function memberController(pool) {
               c."mobileNumber", c."photo_url", c.gender, c."dateOfBirth",
               c.business, c.city, c.state, c.country, c.status,
               c."fatherId", c."sonIds", c."hasAppAccess", c."isClaimed",
-              c."createdBy", c.role,
+              c."createdBy", c.role, c."created_at",
               fl.level + 1 as level
             FROM members c
             INNER JOIN family_lineage fl 
@@ -4137,6 +4250,7 @@ function memberController(pool) {
             gender: normalizeGender(m.gender) || m.gender,
             dateOfBirth: m.dateOfBirth,
             age: calculateAgeFromDob(m.dateOfBirth),
+            createdAt: m.created_at || null,
             mobileNumber: m.mobileNumber || null,
             photoUrl: m.photo_url || null,
             business: m.business || null,
@@ -4187,6 +4301,7 @@ function memberController(pool) {
         }
 
         const rootNode = nodeMap.get(rootId);
+        sortFamilyTreeChildren(rootNode);
 
         function countTreeNodes(node, visitedSet = new Set()) {
           if (!node || visitedSet.has(node.id)) return 0;
@@ -4273,12 +4388,14 @@ function memberController(pool) {
         if (sonIds.length > 0) {
           const sonsRes = await pool.query(
             `SELECT id, "firstName", "middleName", surname, "firstNameEnglish", "middleNameEnglish", "surnameEnglish",
-                    "mobileNumber", "photo_url", gender, "dateOfBirth", business, city, "hasAppAccess", "isClaimed"
+                    "mobileNumber", "photo_url", gender, "dateOfBirth", business, city, "hasAppAccess", "isClaimed", "created_at"
              FROM members WHERE id = ANY($1) AND COALESCE("isDeleted", false) = false
              ORDER BY id ASC`,
             [sonIds],
           );
-          sons = sonsRes.rows.map(withComputedAge);
+          sons = sonsRes.rows
+            .map(withComputedAge)
+            .sort(compareFamilyMembersByAgeAndCreatedAt);
         }
 
         // 3. Managed members (created by caller)
